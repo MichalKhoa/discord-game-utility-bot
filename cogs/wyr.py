@@ -7,8 +7,7 @@ class Wyr(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="wyr", description="Would you rather? game")
-    async def wyr(self, interaction: discord.Interaction):
+    async def start_game(self, interaction: discord.Interaction):
         await self.start_wyr_game(interaction)
 
     async def start_wyr_game(self, interaction: discord.Interaction):
@@ -23,22 +22,26 @@ class Wyr(commands.Cog):
 
         view = WyrButtons()
 
-        # 1. Send the initial message
-        await interaction.response.send_message(embed=panel, view=view)
+        if interaction.response.is_done():
+            message = await interaction.followup.send(embed=panel, view=view, wait=True)
+        else:
+            await interaction.response.send_message(embed=panel, view=view)
+            message = await interaction.original_response()
 
-        # 2. Get the actual message object so the View can edit it later
-        view.message = await interaction.original_response()
-
-        # 3. Start the loop
+        view.message = message
         view.update_panel.start()
+
+    @app_commands.command(name="wyr", description="Would you rather? game")
+    async def wyr(self, interaction: discord.Interaction):
+        await self.start_game(interaction)
 
 
 class WyrButtons(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)  # Set a timeout so the loop doesn't run forever
+        super().__init__(timeout=180)
         self.voter_A = set()
         self.voter_B = set()
-        self.message = None  # This will be set after the message is sent
+        self.message = None
 
     @discord.ui.button(label="A", style=discord.ButtonStyle.primary, custom_id="wyr_a")
     async def button_a(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -58,9 +61,8 @@ class WyrButtons(discord.ui.View):
     async def update_panel(self):
         if self.message:
             try:
-                panel = self.message.embeds[0] # type: ignore
+                panel = self.message.embeds[0]
                 panel.set_field_at(0, name="Votes", value=f"A: {len(self.voter_A)} | B: {len(self.voter_B)}")
-
                 await self.message.edit(embed=panel)
             except Exception as e:
                 print(f"Loop error: {e}")
@@ -68,7 +70,6 @@ class WyrButtons(discord.ui.View):
 
     async def on_timeout(self):
         self.update_panel.stop()
-        # Optional: Disable buttons when the poll ends
         for item in self.children:
             item.disabled = True
         if self.message:

@@ -11,7 +11,7 @@ from database import Question_Database
 
 class DiscordGameUtilityBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix="!", intents=discord.Intents.all())
+        super().__init__(command_prefix="!", intents=discord.Intents.all(), owner_id=210022124423741440)
         self.database = Question_Database()
 
     async def setup_hook(self):
@@ -37,11 +37,20 @@ async def on_connect():
 async def ping(ctx):
     await ctx.send("pong")
 
+
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
-    await bot.tree.sync()
-    await ctx.send("Tree synced!")
+    # 1. Clear the "thinking" state if it's a long process
+    await ctx.send("Syncing... please wait.")
+
+    # 2. Copy the global commands to this specific server
+    bot.tree.copy_global_to(guild=ctx.guild)
+
+    # 3. Sync specifically to this server
+    synced = await bot.tree.sync(guild=ctx.guild)
+
+    await ctx.send(f"✅ Successfully synced {len(synced)} commands to this server!")
 
 @bot.command()
 @commands.is_owner()

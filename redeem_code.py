@@ -16,12 +16,15 @@ SERVICE_ACCOUNT_FILE = 'service-account.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 
-def download_google_doc(file_id, output_filename):
+def get_drive_service():
     # Authenticate using the service account key file
     creds = service_account.Credentials.from_service_account_file(
         SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 
-    service = build('drive', 'v3', credentials=creds)
+    return build('drive', 'v3', credentials=creds)
+
+def download_google_doc(file_id: str, output_filename: str):
+    service = get_drive_service()
 
     # Export as plain text
     request = service.files().export_media(fileId=file_id, mimeType='text/plain')
@@ -32,6 +35,37 @@ def download_google_doc(file_id, output_filename):
         while not done:
             status, done = downloader.next_chunk()
             print(f"Download {int(status.progress() * 100)}%.")
+
+
+def update_file_if_needed(file_id, local_destination):
+    service = get_drive_service()
+
+    # 1. Fetch remote metadata (specifically the MD5 hash)
+    remote_file = service.files().get(fileId=file_id, fields='md5Checksum, name').execute()
+    remote_md5 = remote_file.get('md5Checksum')
+
+    # 2. Check if local file exists and calculate its MD5
+    needs_update = True
+    if os.path.exists(local_destination):
+        with open(local_destination, "rb") as f:
+            local_md5 = hashlib.md5(f.read()).hexdigest()
+
+        if local_md5 == remote_md5:
+            print(f"✅ '{local_destination}' is already up to date.")
+            needs_update = False
+
+    # 3. Download only if necessary
+    if needs_update:
+        print(f"🔄 Updating '{local_destination}'...")
+        request = service.files().get_media(fileId=file_id)
+        fh = io.FileIO(local_destination, 'wb')
+        downloader = MediaIoBaseDownload(fh, request)
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            print(f"Download Progress: {int(status.progress() * 100)}%")
+        print("✨ Update successful.")
 
 
 # Constants from the original script
@@ -133,8 +167,7 @@ def redeem_for_all(giftCode: str):
                          }
                 )
                 if redeem_result.get('msg').replace('.', '') == "TIME ERROR":
-                    print(f"Giftcode {giftCode} is expired")
-                    break
+                    return (f"Giftcode {giftCode} is expired")
                 elif redeem_result.get('msg').replace('.', '') == "TIMEOUT RETRY":
                     print("Retrying...")
                     redeem_result = redeem_for_one(player[0], giftCode)
@@ -152,5 +185,5 @@ def redeem_for_all(giftCode: str):
     end_time = perf_counter()
     result_time_CPU = end_time_CPU - start_time_CPU
     result_time = end_time - start_time
-    print(f"Code redeemed for {player_count} players in %.3fs and in %0.3fs CPU process time" % (result_time, result_time_CPU))
-
+    return (f"✅ **Process Complete!\n"
+            f"Code redeemed for {player_count} players in %.3fs and in %0.3fs CPU process time") % (result_time, result_time_CPU)
