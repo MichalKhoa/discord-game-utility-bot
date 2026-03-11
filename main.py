@@ -38,7 +38,7 @@ async def ping(ctx):
     await ctx.send("pong")
 
 @bot.command()
-@commands.is_owner
+@commands.is_owner()
 async def sync(ctx):
     await bot.tree.sync()
     await ctx.send("Tree synced!")

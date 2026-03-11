@@ -56,7 +56,7 @@ class Question_Database:
                 "SELECT option_a, option_b FROM wyr_questions WHERE rating = 'SFW' ORDER BY RANDOM() LIMIT 1"
             )
             options = await cursor.fetchone()
-            print(f'{options[0]}, {options[1]}')
+            # print(f'{options[0]}, {options[1]}')
             option_A = options[0]
             option_B = options[1]
             if option_A and option_B:

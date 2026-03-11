@@ -9,6 +9,9 @@ class Wyr(commands.Cog):
 
     @app_commands.command(name="wyr", description="Would you rather? game")
     async def wyr(self, interaction: discord.Interaction):
+        await self.start_wyr_game(interaction)
+
+    async def start_wyr_game(self, interaction: discord.Interaction):
         question = await self.bot.database.get_random_wyr_question()
 
         panel = discord.Embed(
