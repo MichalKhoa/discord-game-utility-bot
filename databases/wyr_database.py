@@ -2,8 +2,12 @@ import aiosqlite
 import asyncio
 
 class Question_Database:
+    def __init__(self):
+        # Corrected path to point to the database file in the project root
+        self.db_path = 'wyr_question_bank.db'
+
     async def init_db(self):
-        async with aiosqlite.connect('question_bank.db') as db:
+        async with aiosqlite.connect(self.db_path) as db:
             await db.execute('''
                              CREATE TABLE IF NOT EXISTS wyr_questions (
                                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,37 +33,35 @@ class Question_Database:
 
             await db.commit()
 
-    async def add_wyr_question(option_a: str, option_b: str, tag_list: list[str], rating: str = 'SFW',):
-        async with aiosqlite.connect('question_bank.db') as db:
-            question = await db.execute(
+    async def add_wyr_question(self, option_a: str, option_b: str, tag_list: list[str], rating: str = 'SFW',):
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
                 "INSERT INTO wyr_questions (option_a, option_b, rating) "
                 "VALUES (?, ?, ?)", (option_a, option_b, rating))
 
-            question_id = question.lastrowid
+            question_id = cursor.lastrowid
 
             for tag in tag_list:
-                await db.execute("INSERT OR IGNORE INTO tags (tag_name)VALUES (?)", tag)
+                await db.execute("INSERT OR IGNORE INTO tags (tag_name) VALUES (?)", (tag,))
 
-                tag_obj = db.execute("SELECT id FROM tags WHERE tag_name = (?)", tag)
+                cursor_tag = await db.execute("SELECT id FROM tags WHERE tag_name = ?", (tag,))
 
-                tag_row = await tag_obj.fetchone()
-                tag_id = tag_row[0]
-
-                await db.execute("INSERT or IGNORE INTO question_tags (question_id, tag_)"
-                                 "VALUES (?, ?)" (question_id, tag_id))
+                tag_row = await cursor_tag.fetchone()
+                if tag_row:
+                    tag_id = tag_row[0]
+                    # Corrected the syntax for inserting into question_tags
+                    await db.execute("INSERT OR IGNORE INTO question_tags (question_id, tag_id) "
+                                     "VALUES (?, ?)", (question_id, tag_id))
 
             await db.commit()
 
     async def get_random_wyr_question(self):
-        async with aiosqlite.connect('question_bank.db') as db:
+        async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT option_a, option_b FROM wyr_questions WHERE rating = 'SFW' ORDER BY RANDOM() LIMIT 1"
             )
-            options = await cursor.fetchone()
-            # print(f'{options[0]}, {options[1]}')
-            option_A = options[0]
-            option_B = options[1]
-            if option_A and option_B:
-                return [option_A, option_B]
-            return None
-
+            row = await cursor.fetchone()
+            if row:
+                return [row[0], row[1]]
+            else:
+                return None

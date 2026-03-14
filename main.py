@@ -1,69 +1,61 @@
-import asyncio
 import os
-
+import asyncio
 import discord
-from discord import app_commands
-from discord.ext import commands
-
-import database
-from database import Question_Database
+from pathlib import Path
 
 
-class DiscordGameUtilityBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=discord.Intents.all(), owner_id=210022124423741440)
-        self.database = Question_Database()
+async def play_voice_countdown(interaction_or_ctx, count: int):
+    print("--- UBUNTU VOICE START ---")
 
-    async def setup_hook(self):
-        await self.database.init_db()
-        for filename in os.listdir('./cogs'):
-            if filename.endswith('.py'):
-                await self.load_extension(f'cogs.{filename[:-3]}')
+    user = interaction_or_ctx.user if hasattr(interaction_or_ctx, 'user') else interaction_or_ctx.author
+    guild = interaction_or_ctx.guild
 
-bot = DiscordGameUtilityBot()
+    if not user.voice:
+        return await interaction_or_ctx.channel.send("❌ Join a voice channel first!")
 
-@bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    print("Connected to the Question Bank")
+    # 1. Setup Paths (The Linux Way)
+    # This gets the directory where countdown.py lives
+    current_file = Path(__file__).resolve()
+    # Go up one level to Project Root, then into audio
+    audio_dir = current_file.parent.parent / "audio"
 
-@bot.event
-async def on_connect():
-    print(f'Connected to {bot.user.name}')
-    for server in bot.guilds:
-        print(f"Connected to {server.name} (ID: {server.id})")
+    # 2. Connection Logic
+    if guild.voice_client:
+        await guild.voice_client.disconnect(force=True)
+        await asyncio.sleep(0.5)
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send("pong")
-
-
-@bot.command()
-@commands.is_owner()
-async def sync(ctx):
-    # 1. Clear the "thinking" state if it's a long process
-    await ctx.send("Syncing... please wait.")
-
-    # 2. Copy the global commands to this specific server
-    bot.tree.copy_global_to(guild=ctx.guild)
-
-    # 3. Sync specifically to this server
-    synced = await bot.tree.sync(guild=ctx.guild)
-
-    await ctx.send(f"✅ Successfully synced {len(synced)} commands to this server!")
-
-@bot.command()
-@commands.is_owner()
-async def reload(ctx, extension: str):
     try:
-        await bot.reload_extension(f'cogs.{extension}')
-        await ctx.send(f'✅ Successfully reloaded `{extension}`')
+        vc = await user.voice.channel.connect(timeout=10.0)
+        print(f"Connected to {user.voice.channel.name}")
+
+        # Essential: Give Linux a second to initialize the stream
+        await asyncio.sleep(1.5)
+
+        for i in range(count):
+            if not vc.is_connected():
+                break
+
+            # Linux is CASE SENSITIVE. Ensure filenames match exactly.
+            file_path = audio_dir / f"audioNumber_{i}.mp3"
+
+            if file_path.exists():
+                # On Ubuntu, we don't need 'executable=' because ffmpeg is in /usr/bin/
+                source = discord.FFmpegPCMAudio(str(file_path))
+
+                if vc.is_playing():
+                    vc.stop()
+
+                vc.play(source)
+                print(f"Playing: {file_path.name}")
+            else:
+                print(f"❌ File not found: {file_path}")
+
+            await asyncio.sleep(1)
+
     except Exception as e:
-        await ctx.send(f'❌ Failed to reload `{extension}`\n```python\n{e}\n```')
+        print(f"⚠️ Ubuntu Playback Error: {e}")
 
-async def main():
-    token = open("token.txt", "r").read().strip()
-    async with bot:
-        await bot.start(token)
-
-asyncio.run(main())
+    finally:
+        if vc and vc.is_connected():
+            print("Disconnecting...")
+            await vc.disconnect()

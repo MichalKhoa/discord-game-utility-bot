@@ -12,7 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 
-SERVICE_ACCOUNT_FILE = 'service-account.json'
+SERVICE_ACCOUNT_FILE = '../service-account.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 
@@ -148,7 +148,7 @@ def redeem_for_all(giftCode: str):
     start_time = perf_counter()
     start_time_CPU = time.process_time()
 
-    with open("playerIDs.txt", "r") as f:
+    with open("../playerIDs.txt", "r") as f:
         for line in f.readlines():
             if line.count('#') > 0:
                 print(line)
