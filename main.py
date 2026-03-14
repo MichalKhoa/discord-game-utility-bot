@@ -8,7 +8,6 @@ from discord.ext import commands
 from databases.wyr_database import Question_Database
 
 
-
 class DiscordGameUtilityBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.all(), owner_id=210022124423741440)
@@ -26,6 +25,16 @@ bot = DiscordGameUtilityBot()
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
     print("Connected to the Question Bank")
+    # This manually loads the opus library for Ubuntu
+    if not discord.opus.is_loaded():
+        try:
+            # Common path for Ubuntu 64-bit
+            discord.opus.load_opus('libopus.so.0')
+            print("✅ Opus library loaded successfully.")
+        except Exception as e:
+            print(f"❌ Failed to load Opus: {e}")
+
+    print(f'Logged in as {bot.user}')
 
 @bot.event
 async def on_connect():

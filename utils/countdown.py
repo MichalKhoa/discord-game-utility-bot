@@ -5,17 +5,26 @@ import gtts
 import asyncio
 import discord
 
-def generate_audio_files(count: int):
-    if not os.path.exists("../audio"):
-        os.makedirs("../audio")
 
-    for i in range(0, count):
-        if os.path.exists("../audio/audioNumber_" + str(i) + ".mp3"):
+def generate_audio_files(count: int):
+    # Get the absolute path of the directory containing THIS script
+    # Then go up one level and into 'audio'
+    base_path = Path(__file__).resolve().parent.parent / "audio"
+
+    # Create the directory if it's missing
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    # Use count + 1 so that if count is 10, it actually generates 10
+    for i in range(count + 1):
+        file_path = base_path / f"audioNumber_{i}.mp3"
+
+        if file_path.exists():
             continue
-        textToConvert = f'{i}'.lower()
-        audio = gtts.gTTS(text=textToConvert, lang="en", )
-        filePath = f"../audio/audioNumber_{i}.mp3"
-        audio.save(filePath)
+
+        print(f"Generating: {file_path.name}")
+        text_to_convert = str(i)
+        audio = gtts.gTTS(text=text_to_convert, lang="en")
+        audio.save(str(file_path))
 
 
 # def play_audio(count):
@@ -59,31 +68,36 @@ import os
 import asyncio
 import discord
 
+import os
+import asyncio
+import discord
+from pathlib import Path
+
 
 async def play_voice_countdown(interaction_or_ctx, count: int):
-    print("--- STARTING RALLY COUNTDOWN ---")
+    # 1. Setup Paths IMMEDIATELY
+    current_file = Path(__file__).resolve()
+    audio_dir = current_file.parent.parent / "audio"
 
-    # 1. Setup Context
+    # Ensure the directory actually exists on the OS
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    print("--- UBUNTU VOICE START ---")
+
+    # 2. Corrected Generation Check
+    # Use the absolute path to check for the file
+    check_file = audio_dir / f"audioNumber_{count}.mp3"
+
+    if not check_file.exists():
+        print(f"Generating files in: {audio_dir}")
+        await asyncio.to_thread(generate_audio_files, count)
+
     user = interaction_or_ctx.user if hasattr(interaction_or_ctx, 'user') else interaction_or_ctx.author
     guild = interaction_or_ctx.guild
 
     if not user.voice:
         return await interaction_or_ctx.channel.send("❌ Join a voice channel first!")
 
-    # 2. Define Paths relative to this file
-    # This file is in /utils, so ".." goes to the Project Root
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, ".."))
-
-    audio_dir = os.path.join(project_root, "audio")
-    ffmpeg_exe = os.path.join(project_root, "ffmpeg.exe")
-
-    # Debug: Ensure FFmpeg exists
-    if not os.path.exists(ffmpeg_exe):
-        print(f"❌ CRITICAL: ffmpeg.exe not found at {ffmpeg_exe}")
-        return await interaction_or_ctx.channel.send("⚠️ Bot Error: FFmpeg is missing from the server.")
-
-    # 3. Handle Voice Connection
     if guild.voice_client:
         await guild.voice_client.disconnect(force=True)
         await asyncio.sleep(0.5)
@@ -92,34 +106,34 @@ async def play_voice_countdown(interaction_or_ctx, count: int):
         vc = await user.voice.channel.connect(timeout=10.0)
         print(f"Connected to {user.voice.channel.name}")
 
-        # Give Discord a second to open the audio stream
         await asyncio.sleep(1.5)
 
-        for i in range(count):
+        for i in range(count, -1, -1):
             if not vc.is_connected():
                 break
 
-            # Adjust this filename if your files are named differently (e.g., 'Number_0.mp3')
-            file_path = os.path.join(audio_dir, f"audioNumber_{i}.mp3")
+            file_path = audio_dir / f"audioNumber_{i}.mp3"
 
-            if os.path.exists(file_path):
-                # We pass the 'executable' path directly here
-                source = discord.FFmpegPCMAudio(file_path, executable=ffmpeg_exe)
+            if file_path.exists():
+                source = discord.FFmpegPCMAudio(str(file_path))
 
                 if vc.is_playing():
                     vc.stop()
 
                 vc.play(source)
-                print(f"Playing: audioNumber_{i}.mp3")
-            else:
-                print(f"⚠️ Missing file: {file_path}")
+                # print(f"Playing: {file_path.name}")
+            # else:
+            #     print(f"❌ File not found: {file_path}")
 
-            await asyncio.sleep(1)  # Seconds between numbers
+            await asyncio.sleep(1)
+        while vc.is_playing():
+            await asyncio.sleep(1)
 
     except Exception as e:
-        print(f"⚠️ Playback Error: {e}")
+        print(f"⚠️ Ubuntu Playback Error: {e}")
 
     finally:
         if vc and vc.is_connected():
-            print("Finished countdown. Disconnecting.")
+            print("Disconnecting...")
             await vc.disconnect()
+
