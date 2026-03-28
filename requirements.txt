@@ -10,3 +10,4 @@ oauth2client
 protobuf
 gtts
 PyNaCl
+aiohttp

@@ -1,3 +1,4 @@
+import datetime
 import io
 import os
 from time import process_time, perf_counter
@@ -12,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 
-SERVICE_ACCOUNT_FILE = '../service-account.json'
+SERVICE_ACCOUNT_FILE = 'service-account.json'
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 
@@ -40,32 +41,24 @@ def download_google_doc(file_id: str, output_filename: str):
 def update_file_if_needed(file_id, local_destination):
     service = get_drive_service()
 
-    # 1. Fetch remote metadata (specifically the MD5 hash)
-    remote_file = service.files().get(fileId=file_id, fields='md5Checksum, name').execute()
-    remote_md5 = remote_file.get('md5Checksum')
+    # 1. Fetch metadata (modifiedTime instead of md5)
+    remote_file = service.files().get(fileId=file_id, fields='modifiedTime, name').execute()
+    remote_time_str = remote_file.get('modifiedTime')  # Format: 2023-10-27T10:00:00.000Z
 
     # 2. Check if local file exists and calculate its MD5
     needs_update = True
-    if os.path.exists(local_destination):
-        with open(local_destination, "rb") as f:
-            local_md5 = hashlib.md5(f.read()).hexdigest()
+    remote_time = datetime.datetime.strptime(remote_time_str, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()
 
-        if local_md5 == remote_md5:
-            print(f"✅ '{local_destination}' is already up to date.")
+    if os.path.exists(local_destination):
+        local_time = os.path.getmtime(local_destination)
+        if local_time >= remote_time:
             needs_update = False
 
     # 3. Download only if necessary
     if needs_update:
-        print(f"🔄 Updating '{local_destination}'...")
-        request = service.files().get_media(fileId=file_id)
-        fh = io.FileIO(local_destination, 'wb')
-        downloader = MediaIoBaseDownload(fh, request)
-
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            print(f"Download Progress: {int(status.progress() * 100)}%")
-        print("✨ Update successful.")
+        download_google_doc(DOC_ID, '../playerIDs.txt')
+    else:
+        print("File up to date.")
 
 
 # Constants from the original script
@@ -185,5 +178,10 @@ def redeem_for_all(giftCode: str):
     end_time = perf_counter()
     result_time_CPU = end_time_CPU - start_time_CPU
     result_time = end_time - start_time
+    print(f"✅ **Process Complete!\n"
+            f"Code redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
     return (f"✅ **Process Complete!\n"
-            f"Code redeemed for {player_count} players in %.3fs and in %0.3fs CPU process time") % (result_time, result_time_CPU)
+            f"Code redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
+
+# update_file_if_needed(DOC_ID, '../playerIDs.txt')
+# redeem_for_all("KS0315")

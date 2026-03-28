@@ -5,6 +5,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import aiohttp
+
 from utils.redeem_code import update_file_if_needed, redeem_for_all
 
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
@@ -34,25 +36,44 @@ class CodeRedeem(commands.Cog):
     async def redeem(self, interaction: discord.Interaction, giftCode: str):
         await self.redeem_code_for_all(interaction, giftCode)
 
+
+    async def run_redeem(self, webhook_url, giftCode, user_id):
+        async with self.redeem_lock:
+            try:
+                await asyncio.to_thread(update_file_if_needed, DOC_ID, "../playerIDs.txt")
+                stats = await asyncio.to_thread(redeem_for_all, giftCode)
+
+                async with aiohttp.ClientSession() as session:
+                    webhook = discord.Webhook.from_url(webhook_url, session=session)
+                    await webhook.send(f"<@{user_id}\n>" + stats)
+                    await webhook.delete()
+
+                self.log_success(giftCode)
+
+            except Exception as e:
+                async with aiohttp.ClientSession() as session:
+                    webhook = discord.Webhook.from_url(webhook_url, session=session)
+                    await webhook.send(f"❌ Error during redemption: {e}")
+                    await webhook.delete()
+
+
     async def redeem_code_for_all(self, interaction: discord.Interaction, giftCode: str):
-        await interaction.response.defer(thinking=True)
+        await interaction.response.send_message(f"‼ Redeeming code {giftCode} for everyone."
+                                                f"Process might take longer, I will ping you when finished.")
+
+        if self.is_code_redeemed(giftCode):
+            await interaction.followup.send(f"⚠️ Code {giftCode} has already been redeemed!", ephemeral=True)
+            return
 
         # Check if the lock is already held
         if self.redeem_lock.locked():
-            await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!", ephemeral=True)
+            await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
+            return
 
-        # This 'async with' ensures only ONE person executes the block below at a time
-        async with self.redeem_lock:
-            try:
-                if self.is_code_redeemed(giftCode):
-                    await interaction.followup.send(f"⚠️ Code {giftCode} has already been redeemed!", ephemeral=True)
-                    return
-                await asyncio.to_thread(update_file_if_needed, DOC_ID, "playerIDs.txt")
-                stats = await asyncio.to_thread(redeem_for_all, giftCode)
-                await interaction.followup.send(f"✅ Done!\n{stats}")
-                self.log_success(giftCode)
-            except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
+        webhook = await interaction.channel.create_webhook(name="GiftCodeRedeemBot")
+        webhook_url = webhook.url
+        asyncio.create_task(self.run_redeem(webhook_url, giftCode, interaction.user.id))
+
 
 async def setup(bot: commands.Bot):
     print("CodeRedeem cog loaded")
