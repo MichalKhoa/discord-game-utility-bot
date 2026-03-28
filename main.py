@@ -49,9 +49,19 @@ async def ping(ctx):
 
 @bot.command()
 @commands.is_owner()
-async def sync(ctx):
-    # 1. Clear the "thinking" state if it's a long process
-    await ctx.send("Syncing... please wait.")
+async def sync_global(ctx):
+    print("Syncing globally...")
+    # Leaving the parentheses empty triggers a global sync
+    synced = await bot.tree.sync()
+    await ctx.send(f"Globally synced {len(synced)} commands. Note: This can take up to an hour to propagate.")
+
+
+@bot.command()
+@commands.is_owner()
+async def sync_local(ctx):
+    # # 1. Clear the "thinking" state if it's a long process
+    # await ctx.send("Syncing locally... please wait.")
+    print("Syncing locally...")
 
     # 2. Copy the global commands to this specific server
     bot.tree.copy_global_to(guild=ctx.guild)
