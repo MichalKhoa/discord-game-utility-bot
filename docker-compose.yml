@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  bot:
+    # PORTAINER NOTE: If pasting this compose file into Portainer Web UI:
+    # 1. Build the image locally on your server first using:
+    #    docker build -t discord-game-utility-bot:latest .
+    # 2. Comment out 'build: .' and uncomment 'image: discord-game-utility-bot:latest' below.
+    build: .
+    # image: discord-game-utility-bot:latest
+
+    container_name: discord-game-utility-bot
+    restart: unless-stopped
+
+    # PORTAINER NOTE: If deploying as a stack in Portainer, you can define environment 
+    # variables directly in the Portainer UI instead of using a .env file.
+    # env_file:
+    #   - .env
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+
+    volumes:
+      # PORTAINER NOTE: Relative paths (like './audio') are resolved relative to Portainer's
+      # stack folder. For easier management, consider replacing relative paths below
+      # with absolute paths on your host machine (e.g., '/opt/discord-bot/audio:/app/audio')
+      # or using named volumes.
+
+      # Mount the SQLite database directory to persist Would You Rather questions
+      - ./data:/app/data
+
+      # Mount the player IDs input list
+      - ./playerIDs.txt:/app/playerIDs.txt
+
+      # Mount the log of redeemed codes
+      - ./redeemed_codes.txt:/app/redeemed_codes.txt
+
+      # Mount the audio directory to persist cached TTS files and avoid regenerating them
+      - ./audio:/app/audio
+      # (Optional) Mount local files if you prefer files over environment variables:
+      # - ./token.txt:/app/token.txt
+      # - ./service-account.json:/app/service-account.json
+

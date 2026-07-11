@@ -1,13 +1,10 @@
-pip
 discord.py
 aiosqlite
 requests
 google-api-python-client
+google-auth
 google-auth-httplib2
 google-auth-oauthlib
-google-api-python-client
-oauth2client
-protobuf
-gtts
+gTTS
 PyNaCl
 aiohttp
