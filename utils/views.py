@@ -2,12 +2,13 @@ import discord
 from discord.ext import commands, tasks
 
 from utils.embeds import MainMenuEmbed
-from utils.modals import RedeemModal, MessageModal
+from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal
+from utils.countdown import play_voice_countdown
 
 
 class MenuButtons(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=600)
+        super().__init__(timeout=43200)
         self.bot = bot
 
     @discord.ui.button(label="Games", style=discord.ButtonStyle.primary)
@@ -29,14 +30,25 @@ class MenuButtons(discord.ui.View):
             colour=discord.Colour.yellow())
         utility_menu_panel.add_field(
             name="🪙 Redeem codes for everyone",
-            value="> **A new KS gift code has been released?**\nRedeem it for everyone now (Please take note, that the process might take some time to finish.)"
+            value="> **A new KS gift code has been released?**\nRedeem it for everyone now (Please take note, that the process might take some time to finish.)",
+            inline=False
+        )
+        utility_menu_panel.add_field(
+            name="👤 Redeem code for one player",
+            value="> Redeem a KS gift code for a single player ID instantly.",
+            inline=False
+        )
+        utility_menu_panel.add_field(
+            name="🎙️ Rally Countdown Panel",
+            value="> Open the interactive voice countdown panel for rallies.",
+            inline=False
         )
         await interaction.response.edit_message(embed=utility_menu_panel, view=UtilityMenuButtons(self.bot))
 
 
 class GameMenuButtons(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=600)
+        super().__init__(timeout=43200)
         self.bot = bot
 
     @discord.ui.button(label="Would you rather ...", style=discord.ButtonStyle.primary)
@@ -57,7 +69,7 @@ class GameMenuButtons(discord.ui.View):
 
 class UtilityMenuButtons(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=600)
+        super().__init__(timeout=43200)
         self.bot = bot
 
     @discord.ui.button(label="Redeem a Gift Code for everyone", style=discord.ButtonStyle.primary)
@@ -69,17 +81,29 @@ class UtilityMenuButtons(discord.ui.View):
         else:
             await interaction.response.send_message("CodeRedeem module error", ephemeral=True)
 
+    @discord.ui.button(label="Redeem for Single Player", style=discord.ButtonStyle.primary)
+    async def redeem_for_player_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        redeem_cog = self.bot.get_cog("CodeRedeem")
+
+        if redeem_cog:
+            await interaction.response.send_modal(RedeemSingleModal(redeem_cog))
+        else:
+            await interaction.response.send_message("CodeRedeem module error", ephemeral=True)
+
 
     # @discord.ui.button(label="Melody is a nerd", style=discord.ButtonStyle.danger)
     # async def dm_melody(self, interaction: discord.Interaction, button: discord.ui.Button):
     #     mention = f"<@1269222243569897513>"
     #     await interaction.response.send_message(f"Hey {mention}, stop being so nerdy!")
 
-
-    @discord.ui.button(label="Tag Melody with a message", style=discord.ButtonStyle.danger)
-    async def tag_melody(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(MessageModal())
-
+    @discord.ui.button(label="Rally Countdown", style=discord.ButtonStyle.primary)
+    async def rally_countdown_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🎙️ Rally Countdown Panel",
+            description="Select one of the preset timers below, trigger a custom countdown, or stop the voice client.",
+            color=discord.Color.og_blurple()
+        )
+        await interaction.response.edit_message(embed=embed, view=RallyCountdownView(self.bot))
 
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary)
     async def return_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -90,7 +114,7 @@ class UtilityMenuButtons(discord.ui.View):
 
 class WyrButtons(discord.ui.View):
     def __init__(self, bot, cog_instance): # Accept bot and cog
-        super().__init__(timeout=300)
+        super().__init__(timeout=43200)
         self.bot = bot
         self.cog = cog_instance
         self.voter_A = set()
@@ -141,3 +165,69 @@ class WyrButtons(discord.ui.View):
             item.disabled = True
         if self.message:
             await self.message.edit(view=self)
+
+
+class RallyCountdownView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=43200)
+        self.bot = bot
+
+    @discord.ui.button(label="6s", style=discord.ButtonStyle.primary, row=0)
+    async def seconds_6(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🎙️ Starting 6s countdown...", ephemeral=True)
+        await play_voice_countdown(interaction, 6)
+
+    @discord.ui.button(label="8s", style=discord.ButtonStyle.primary, row=0)
+    async def seconds_8(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🎙️ Starting 8s countdown...", ephemeral=True)
+        await play_voice_countdown(interaction, 8)
+
+    @discord.ui.button(label="10s", style=discord.ButtonStyle.primary, row=0)
+    async def seconds_10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🎙️ Starting 10s countdown...", ephemeral=True)
+        await play_voice_countdown(interaction, 10)
+
+    @discord.ui.button(label="12s", style=discord.ButtonStyle.primary, row=0)
+    async def seconds_12(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🎙️ Starting 12s countdown...", ephemeral=True)
+        await play_voice_countdown(interaction, 12)
+
+    @discord.ui.button(label="14s", style=discord.ButtonStyle.primary, row=0)
+    async def seconds_14(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🎙️ Starting 14s countdown...", ephemeral=True)
+        await play_voice_countdown(interaction, 14)
+
+    @discord.ui.button(label="Custom Countdown", style=discord.ButtonStyle.success, row=1)
+    async def custom_countdown(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CustomCountdownModal())
+
+    @discord.ui.button(label="Stop / Disconnect", style=discord.ButtonStyle.danger, row=1)
+    async def stop_countdown(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild.voice_client:
+            await interaction.guild.voice_client.disconnect(force=True)
+            await interaction.response.send_message("⏹️ Stopped countdown and disconnected.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Bot is not connected to a voice channel.", ephemeral=True)
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, row=1)
+    async def return_to_utilities(self, interaction: discord.Interaction, button: discord.ui.Button):
+        utility_menu_panel = discord.Embed(
+            title="Choose one of the options below:",
+            colour=discord.Colour.yellow()
+        )
+        utility_menu_panel.add_field(
+            name="🪙 Redeem codes for everyone",
+            value="> **A new KS gift code has been released?**\nRedeem it for everyone now (Please take note, that the process might take some time to finish.)",
+            inline=False
+        )
+        utility_menu_panel.add_field(
+            name="👤 Redeem code for one player",
+            value="> Redeem a KS gift code for a single player ID instantly.",
+            inline=False
+        )
+        utility_menu_panel.add_field(
+            name="🎙️ Rally Countdown Panel",
+            value="> Open the interactive voice countdown panel for rallies.",
+            inline=False
+        )
+        await interaction.response.edit_message(embed=utility_menu_panel, view=UtilityMenuButtons(self.bot))

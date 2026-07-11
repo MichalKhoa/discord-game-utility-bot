@@ -6,7 +6,6 @@ from discord.ui import button
 from utils.embeds import MainMenuEmbed
 from utils.views import MenuButtons
 
-
 class Menu(commands.Cog):
     """
 

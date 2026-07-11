@@ -1,30 +1,50 @@
 import os
+import subprocess
 import time
-
-import gtts
 import asyncio
+from pathlib import Path
+import gtts
 import discord
 
 
 def generate_audio_files(count: int):
-    # Get the absolute path of the directory containing THIS script
-    # Then go up one level and into 'audio'
     base_path = Path(__file__).resolve().parent.parent / "audio"
-
-    # Create the directory if it's missing
     base_path.mkdir(parents=True, exist_ok=True)
 
-    # Use count + 1 so that if count is 10, it actually generates 10
     for i in range(count + 1):
         file_path = base_path / f"audioNumber_{i}.mp3"
 
         if file_path.exists():
             continue
 
-        print(f"Generating: {file_path.name}")
-        text_to_convert = str(i)
-        audio = gtts.gTTS(text=text_to_convert, lang="en")
-        audio.save(str(file_path))
+        print(f"Generating and Optimizing: {file_path.name}")
+
+        # 1. Create a temporary path for the raw gTTS output
+        temp_path = base_path / f"temp_{i}.mp3"
+
+        # 2. Generate the raw MP3 via gTTS
+        tts = gtts.gTTS(text=str(i), lang="en")
+        tts.save(str(temp_path))
+
+        # 3. Use FFmpeg to re-encode for Discord/Ubuntu
+        # -ar 48000: Sets sample rate to 48kHz (Discord native)
+        # -ac 2: Sets to 2 channels (stereo)
+        # -b:a 128k: Sets a constant 128kbps bitrate
+        try:
+            subprocess.run([
+                'ffmpeg', '-y', '-i', str(temp_path),
+                '-ar', '48000',
+                '-ac', '2',
+                '-b:a', '128k',
+                str(file_path)
+            ], check=True, capture_output=True)
+
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg Error for {i}: {e.stderr.decode()}")
+        finally:
+            # 4. Clean up the temporary raw file
+            if temp_path.exists():
+                os.remove(temp_path)
 
 
 # def play_audio(count):
@@ -60,18 +80,7 @@ def generate_audio_files(count: int):
 #         time.sleep(interval)
 
 
-import os
-import asyncio
-import discord
 
-import os
-import asyncio
-import discord
-
-import os
-import asyncio
-import discord
-from pathlib import Path
 
 
 async def play_voice_countdown(interaction_or_ctx, count: int):
@@ -102,12 +111,13 @@ async def play_voice_countdown(interaction_or_ctx, count: int):
         await guild.voice_client.disconnect(force=True)
         await asyncio.sleep(0.5)
 
+    vc = None
     try:
         vc = await user.voice.channel.connect(timeout=10.0)
         print(f"Connected to {user.voice.channel.name}")
 
         await asyncio.sleep(1.5)
-
+        start_time = time.perf_counter()
         for i in range(count, -1, -1):
             if not vc.is_connected():
                 break
@@ -115,19 +125,24 @@ async def play_voice_countdown(interaction_or_ctx, count: int):
             file_path = audio_dir / f"audioNumber_{i}.mp3"
 
             if file_path.exists():
-                source = discord.FFmpegPCMAudio(str(file_path))
+                source = discord.FFmpegPCMAudio(str(file_path), before_options="-loglevel panic")
 
                 if vc.is_playing():
                     vc.stop()
 
+                await asyncio.sleep(0.05)
                 vc.play(source)
                 # print(f"Playing: {file_path.name}")
             # else:
             #     print(f"❌ File not found: {file_path}")
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.95)
+        end_time = time.perf_counter()
         while vc.is_playing():
             await asyncio.sleep(1)
+
+        result_time = end_time - start_time
+        print(f"Countdown to {count} finished in {result_time}s")
 
     except Exception as e:
         print(f"⚠️ Ubuntu Playback Error: {e}")
@@ -137,3 +152,4 @@ async def play_voice_countdown(interaction_or_ctx, count: int):
             print("Disconnecting...")
             await vc.disconnect()
 
+# generate_audio_files(10)

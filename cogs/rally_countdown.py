@@ -1,13 +1,16 @@
 import asyncio
+import importlib
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import button
 
-from utils import countdown
+import utils.countdown
 from utils.countdown import play_voice_countdown
+from utils.views import RallyCountdownView
 
+importlib.reload(utils.countdown)
 
 class RallyCountdown(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -23,6 +26,24 @@ class RallyCountdown(commands.Cog):
     async def prefix_countdown(self, ctx: commands.Context, count: int = 10):
         await ctx.send(f"🎙️ Starting {count}s voice countdown...")
         await play_voice_countdown(ctx, count)
+
+    @app_commands.command(name="rally-menu", description="Opens the Rally Countdown interactive menu.")
+    async def rally_menu_slash(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🎙️ Rally Countdown Panel",
+            description="Select one of the preset timers below, trigger a custom countdown, or stop the voice client.",
+            color=discord.Color.og_blurple()
+        )
+        await interaction.response.send_message(embed=embed, view=RallyCountdownView(self.bot))
+
+    @commands.command(name="rallymenu")
+    async def rally_menu_prefix(self, ctx: commands.Context):
+        embed = discord.Embed(
+            title="🎙️ Rally Countdown Panel",
+            description="Select one of the preset timers below, trigger a custom countdown, or stop the voice client.",
+            color=discord.Color.og_blurple()
+        )
+        await ctx.send(embed=embed, view=RallyCountdownView(self.bot))
 
 async def setup(bot):
     print("RallyCountdown cog loaded")

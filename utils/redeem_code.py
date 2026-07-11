@@ -13,7 +13,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 
-SERVICE_ACCOUNT_FILE = 'service-account.json'
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SERVICE_ACCOUNT_FILE = os.path.join(PROJECT_ROOT, 'service-account.json')
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 
@@ -47,7 +48,8 @@ def update_file_if_needed(file_id, local_destination):
 
     # 2. Check if local file exists and calculate its MD5
     needs_update = True
-    remote_time = datetime.datetime.strptime(remote_time_str, '%Y-%m-%dT%H:%M:%S.%fZ').timestamp()
+    # Convert Google Drive ISO 8601 string to a timestamp safely (handles any sub-second length)
+    remote_time = datetime.datetime.fromisoformat(remote_time_str.replace('Z', '+00:00')).timestamp()
 
     if os.path.exists(local_destination):
         local_time = os.path.getmtime(local_destination)
@@ -56,7 +58,8 @@ def update_file_if_needed(file_id, local_destination):
 
     # 3. Download only if necessary
     if needs_update:
-        download_google_doc(DOC_ID, '../playerIDs.txt')
+        download_google_doc(file_id, local_destination)
+        print("File updated.")
     else:
         print("File up to date.")
 
@@ -124,30 +127,39 @@ if player_info.get("code") == 0:
 
 def redeem_for_one(playerId, giftCode):
     for i in range(2):
-        time.sleep(2)
+        time.sleep(i+1)
         redeem_result = send_signed_post(
             "gift_code",
             {"fid": f"{playerId}",
              "cdk": f"{giftCode}"
              }
         )
-        if redeem_result.get('msg').replace('.', '') in ["SUCCESS", "RECEIVED"]:
+        if redeem_result and redeem_result.get('msg', '').replace('.', '') in ["SUCCESS", "RECEIVED"]:
             return redeem_result
     return None
 
 
-def redeem_for_all(giftCode: str):
+def redeem_for_all(giftCode: str, file_path="playerIDs.txt"):
     player_count = 0
     start_time = perf_counter()
     start_time_CPU = time.process_time()
 
-    with open("../playerIDs.txt", "r") as f:
+    # update_file_if_needed(DOC_ID, file_path)
+
+    if not os.path.exists(file_path):
+        return f"File {file_path} not found."
+
+    with open(file_path, "r", encoding="utf-8-sig") as f:
         for line in f.readlines():
-            if line.count('#') > 0:
-                print(line)
+            line = line.strip()
+            if not line or line.startswith('#'):
+                if line.startswith('#'):
+                    print(line)
                 continue
+            # print(f"First char ID: {ord(line[0])}")
             player = line.split(" ")
-            player_info = send_signed_post("player", {"fid": f"{player[0]}"})
+            fid = player[0]
+            player_info = send_signed_post("player", {"fid": fid})
 
             if player_info.get("code") == 0:
                 player_count += 1
@@ -155,21 +167,27 @@ def redeem_for_all(giftCode: str):
 
                 redeem_result = send_signed_post(
                     "gift_code",
-                    {"fid": f"{player[0]}",
-                          "cdk": f"{giftCode}"
+                    {"fid": fid,
+                          "cdk": giftCode
                          }
                 )
-                if redeem_result.get('msg').replace('.', '') == "TIME ERROR":
+                msg = redeem_result.get('msg', '').replace('.', '')
+                if msg == "TIME ERROR":
                     return (f"Giftcode {giftCode} is expired")
-                elif redeem_result.get('msg').replace('.', '') == "TIMEOUT RETRY":
+                elif msg == "TIMEOUT RETRY":
                     print("Retrying...")
-                    redeem_result = redeem_for_one(player[0], giftCode)
+                    redeem_result = redeem_for_one(fid, giftCode)
                     if (redeem_result == None):
-                        print(f"Failed to redeem player: {player[0]}")
+                        print(f"Failed to redeem player: {fid}")
+                        msg = "Failed" # or some indicator
+                    else:
+                        msg = redeem_result.get('msg', '').replace('.', '')
 
-                print(f"Player: {player_info.get("data").get("nickname")} --> {RESULT_MESSAGES[redeem_result.get('msg').replace('.', '')]}")
+                result_message = RESULT_MESSAGES.get(msg, msg)
+                nickname = player_info.get("data", {}).get("nickname", "Unknown")
+                print(f"Player: {nickname} --> {result_message}")
             else:
-                print(f"Player {player[0]} is invalid. Check the ID again.")
+                print(f"Player {fid} is invalid. Check the ID again.")
                 continue
 
             time.sleep(1)
@@ -178,10 +196,7 @@ def redeem_for_all(giftCode: str):
     end_time = perf_counter()
     result_time_CPU = end_time_CPU - start_time_CPU
     result_time = end_time - start_time
-    print(f"✅ **Process Complete!\n"
-            f"Code redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
-    return (f"✅ **Process Complete!\n"
-            f"Code redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
-
-# update_file_if_needed(DOC_ID, '../playerIDs.txt')
-# redeem_for_all("KS0315")
+    print(f"✅ **Process Complete!**\n"
+            f"Code {giftCode} redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
+    return (f"✅ **Process Complete!**\n"
+            f"Code {giftCode} redeemed for {player_count} players in {result_time:.2f}s and in {result_time_CPU:.2f}s CPU process time")
