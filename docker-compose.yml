@@ -8,18 +8,18 @@ services:
     # 2. Comment out 'build: .' and uncomment 'image: discord-game-utility-bot:latest' below.
     build: .
     # image: discord-game-utility-bot:latest
-    
+
     container_name: discord-game-utility-bot
     restart: unless-stopped
-    
+
     # PORTAINER NOTE: If deploying as a stack in Portainer, you can define environment 
     # variables directly in the Portainer UI instead of using a .env file.
-    env_file:
-      - .env
+    # env_file:
+    #   - .env
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN:-}
       - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON:-}
-      
+
     volumes:
       # PORTAINER NOTE: Relative paths (like './audio') are resolved relative to Portainer's
       # stack folder. For easier management, consider replacing relative paths below
@@ -37,7 +37,6 @@ services:
 
       # Mount the audio directory to persist cached TTS files and avoid regenerating them
       - ./audio:/app/audio
-
       # (Optional) Mount local files if you prefer files over environment variables:
       # - ./token.txt:/app/token.txt
       # - ./service-account.json:/app/service-account.json
