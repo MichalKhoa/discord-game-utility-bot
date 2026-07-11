@@ -4,9 +4,8 @@ import asyncio
 
 class Question_Database:
     def __init__(self):
-        # Resolve path relative to the project root
         db_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.db_path = os.path.join(db_dir, 'wyr_question_bank.db')
+        self.db_path = os.path.join(db_dir, 'data', 'wyr_question_bank.db')
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:

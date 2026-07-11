@@ -26,8 +26,8 @@ services:
       # with absolute paths on your host machine (e.g., '/opt/discord-bot/audio:/app/audio')
       # or using named volumes.
 
-      # Mount the SQLite database to persist Would You Rather questions
-      - ./wyr_question_bank.db:/app/wyr_question_bank.db
+      # Mount the SQLite database directory to persist Would You Rather questions
+      - ./data:/app/data
 
       # Mount the player IDs input list
       - ./playerIDs.txt:/app/playerIDs.txt
