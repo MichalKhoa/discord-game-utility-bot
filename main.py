@@ -3,6 +3,18 @@ import os
 import importlib
 import sys
 
+# Reconfigure stdout/stderr to use UTF-8 to prevent UnicodeEncodeErrors on some terminals
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -165,8 +177,17 @@ def acquire_lock():
         sys.exit(1)
 
 async def main():
-    token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.txt")
-    token = open(token_path, "r").read().strip()
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.txt")
+        if os.path.exists(token_path):
+            with open(token_path, "r") as f:
+                token = f.read().strip()
+                
+    if not token:
+        print("❌ Error: No Discord token found. Please set the DISCORD_TOKEN environment variable or create token.txt.")
+        sys.exit(1)
+        
     async with bot:
         await bot.start(token)
 

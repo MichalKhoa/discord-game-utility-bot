@@ -19,9 +19,19 @@ SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 
 def get_drive_service():
-    # Authenticate using the service account key file
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    # Authenticate using the service account credentials from environment or file
+    google_creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if google_creds_json:
+        try:
+            info = json.loads(google_creds_json)
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        except Exception as e:
+            print(f"⚠️ Failed to load Google credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var: {e}")
+            creds = service_account.Credentials.from_service_account_file(
+                SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    else:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 
     return build('drive', 'v3', credentials=creds)
 
