@@ -5,50 +5,30 @@ from discord.ext import commands
 
 ROASTS = [
     "I'd agree with you but then we'd both be wrong.",
-    "You're like a cloud. When you disappear, it's a beautiful day.",
-    "You have a face for radio and a voice for silent films.",
     "If I had a dollar for every smart thing you say, I'd be broke.",
     "You are like a software update. Whenever I see you, I think 'not now'.",
     "You're not the dumbest person in the world, but you better hope they don't die.",
-    "I'd offer you some advice, but you'd probably find a way to break it.",
-    "You make me wish I had more hands, just so I could give your comments more thumbs down.",
-    "Your brain has a '404: Not Found' error on standby.",
-    "If you were a spice, you’d be flour.",
-    "You have a lot of potential, and you'll always have it.",
-    "You are the human equivalent of a participation trophy.",
-    "If you ran as fast as your mouth, you'd be an Olympic athlete.",
-    "You're like a dictionary. You make sense, but you're really boring to listen to.",
-    "You bring a lot of value... just by standing still and being quiet.",
-    "You bring everyone so much joy... when you leave the room.",
-    "I'd explain it to you, but I don't have the time or the crayons.",
-    "Your secrets are safe with me. I never listen anyway.",
-    "If you were any more simple, we'd have to water you.",
-    "You're not stupid; you just have bad luck when you try to think.",
-    "Light travels faster than sound. This is why you seem bright until you speak.",
-    "If you had another brain cell, it would be lonely.",
-    "I've seen plants with better communication skills.",
     "If your brain was made of dynamite, you wouldn't have enough to blow your nose.",
-    "You look like a person who claps when the plane lands.",
-    "You're the reason they put instructions on shampoo bottles.",
-    "You're like a Monday morning. Nobody likes you.",
-    "You have a rare gift for making everyone else look extremely smart.",
-    "I'm not saying you're lazy, but your spirit animal is a sloth on a rest day.",
-    "I'd call you a tool, but even tools are useful.",
-    "I envy everyone who hasn't met you.",
-    "Your brain is like the Bermuda Triangle. Information goes in, and is never heard from again.",
     "Somewhere out there is a tree tirelessly producing oxygen for you. I think you owe it an apology.",
     "I would roast you, but my mom told me not to burn trash.",
     "If laughter is the best medicine, your face must be curing the world.",
     "You have two brain cells left, and they're fighting for third place.",
-    "You look like a before picture.",
-    "I can explain it to you, but I can't understand it for you.",
-    "It's a shame you can't photoshop your personality.",
-    "You're not even a 'has-been.' You're a 'never-was'.",
-    "If I gave you a penny for your thoughts, I'd get change back.",
-    "I'd say you're a comedian, but comedians are actually funny.",
-    "Your only chance of getting a brain cell is if you inhale a dust bunny.",
-    "You're proof that evolution can go in reverse.",
-    "I'd try to hurt your feelings, but I'm not sure you have the capacity to process them."
+    "I'd try to hurt your feelings, but I'm not sure you have the capacity to process them.",
+    "You are the reason the gene pool needs a lifeguard.",
+    "If you were a software feature, you'd be a memory leak.",
+    "If I gave you a brain, you'd probably just play with the box it came in.",
+    "You're the type of person who stares at a juice box because it says 'concentrate'.",
+    "If ignorance is bliss, you must be the happiest person on earth.",
+    "Your opinions are like your hairline: rapidly receding.",
+    "You look like a walking advertisement for birth control.",
+    "I look at you and think, “Two billion years of evolution, for this?”.",
+    "You’re not simply a drama queen/king. You’re the whole royal family.",
+    "Keep talking, and you might be able to solve world hunger — because no one’s going to want to eat your cooking.",
+    "I've had better conversations with my toaster.",
+    "Is your brain made of sponges? It seems to soak up everything except intelligence.",
+    "Don’t worry, the first 40 years of childhood are always the hardest.",
+    "I love what you’ve done with your hair. How’d you get it to come out of your nose like that?.",
+    "If you were any more inbred, you’d be a sandwich."
 ]
 
 YO_MAMA_JOKES = [
@@ -86,6 +66,22 @@ YO_MAMA_JOKES = [
     "Yo mama's so fat, she has to use a search warrant to find her keys."
 ]
 
+class ShuffleBag:
+    def __init__(self, items):
+        self.items = items
+        self.reset()
+    
+    def reset(self):
+        self.items = list(self.items)
+        random.shuffle(self.items)
+    
+    def get(self):
+        if not self.items:
+            self.reset()
+        return self.items.pop()
+
+roastShuffleBag = ShuffleBag(ROASTS)
+yomamaShuffleBag = ShuffleBag(YO_MAMA_JOKES)
 
 class Roast(commands.Cog):
     def __init__(self, bot):
@@ -97,7 +93,7 @@ class Roast(commands.Cog):
     )
     async def roast_slash(self, interaction: discord.Interaction, member: discord.Member = None):
         target = member or interaction.user
-        roast_text = random.choice(ROASTS)
+        roast_text = roastShuffleBag.get()
         
         embed = discord.Embed(
             description=f"### 🔥 {target.mention}, {roast_text}",
@@ -110,7 +106,7 @@ class Roast(commands.Cog):
     async def roast_prefix(self, ctx: commands.Context, member: discord.Member = None):
         """Roast a member."""
         target = member or ctx.author
-        roast_text = random.choice(ROASTS)
+        roast_text = roastShuffleBag.get()
         
         embed = discord.Embed(
             description=f"### 🔥 {target.mention}, {roast_text}",
@@ -129,8 +125,8 @@ class Roast(commands.Cog):
             await interaction.response.send_message("❌ You can't start a duel with yourself!", ephemeral=True)
             return
 
-        roast1 = random.choice(ROASTS)
-        roast2 = random.choice(ROASTS)
+        roast1 = roastShuffleBag.get()
+        roast2 = roastShuffleBag.get()
 
         embed = discord.Embed(
             title="⚔️ ROAST BATTLE DUEL ⚔️",
@@ -153,8 +149,8 @@ class Roast(commands.Cog):
             await ctx.send("❌ You can't start a duel with yourself!")
             return
 
-        roast1 = random.choice(ROASTS)
-        roast2 = random.choice(ROASTS)
+        roast1 = roastShuffleBag.get()
+        roast2 = roastShuffleBag.get()
 
         embed = discord.Embed(
             title="⚔️ ROAST BATTLE DUEL ⚔️",
@@ -175,7 +171,7 @@ class Roast(commands.Cog):
     )
     async def yomama_slash(self, interaction: discord.Interaction, member: discord.Member = None):
         target = member or interaction.user
-        joke = random.choice(YO_MAMA_JOKES)
+        joke = yomamaShuffleBag.get()
         
         embed = discord.Embed(
             description=f"### 👩 {target.mention}, {joke}",
@@ -188,7 +184,7 @@ class Roast(commands.Cog):
     async def yomama_prefix(self, ctx: commands.Context, member: discord.Member = None):
         """Tell a classic Yo Mama joke to a member."""
         target = member or ctx.author
-        joke = random.choice(YO_MAMA_JOKES)
+        joke = yomamaShuffleBag.get()
         
         embed = discord.Embed(
             description=f"### 👩 {target.mention}, {joke}",
