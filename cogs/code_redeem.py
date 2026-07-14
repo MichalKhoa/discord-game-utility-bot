@@ -10,14 +10,14 @@ import aiohttp
 import importlib
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "playerIDs.txt")
+LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
 
 class CodeRedeem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Create a lock specifically for this Cog
         self.redeem_lock = asyncio.Lock()
-        self.log_file = os.path.join(PROJECT_ROOT, "redeemed_codes.txt")
+        self.log_file = os.path.join(PROJECT_ROOT, "data", "redeemed_codes.txt")
         self.running_tasks = set()
 
     def is_code_redeemed(self, code: str) -> bool:

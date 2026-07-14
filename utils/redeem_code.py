@@ -105,7 +105,7 @@ def redeem_for_one(playerId, giftCode):
     return None
 
 
-def redeem_for_all(giftCode: str, file_path="playerIDs.txt"):
+def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt"):
     player_count = 0
     start_time = perf_counter()
     start_time_CPU = time.process_time()

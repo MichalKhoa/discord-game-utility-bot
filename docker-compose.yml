@@ -26,14 +26,8 @@ services:
       # with absolute paths on your host machine (e.g., '/opt/discord-bot/audio:/app/audio')
       # or using named volumes.
 
-      # Mount the SQLite database directory to persist Would You Rather questions
+      # Mount the SQLite database directory to persist Would You Rather questions and player/redeem logs
       - ./data:/app/data
-
-      # Mount the player IDs input list
-      - ./playerIDs.txt:/app/playerIDs.txt
-
-      # Mount the log of redeemed codes
-      - ./redeemed_codes.txt:/app/redeemed_codes.txt
 
       # Mount the audio directory to persist cached TTS files and avoid regenerating them
       - ./audio:/app/audio
