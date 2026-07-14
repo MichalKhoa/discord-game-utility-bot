@@ -50,8 +50,8 @@ class CodeRedeem(commands.Cog):
             print("DEBUG: Acquired lock")
             try:
                 # Use the local file path
-                print("DEBUG: Updating file if needed")
-                await asyncio.to_thread(utils.redeem_code.update_file_if_needed, DOC_ID, LOCAL_PLAYER_IDS)
+                print("DEBUG: Syncing player IDs from Google Doc public export URL")
+                await asyncio.to_thread(utils.redeem_code.update_file_from_public_url, DOC_ID, LOCAL_PLAYER_IDS)
                 
                 results = []
                 for code in gift_codes:
@@ -79,51 +79,72 @@ class CodeRedeem(commands.Cog):
 
     async def redeem_code_for_all(self, interaction: discord.Interaction, gift_code: str):
         print(f"DEBUG: redeem_code_for_all called with {gift_code}")
-        
-        codes = [c.strip() for c in gift_code.split(';') if c.strip()]
-        if not codes:
-            await interaction.response.send_message("⚠️ No valid codes provided!", ephemeral=True)
-            return
-
-        await interaction.response.defer(thinking=True)
-
-        # Check if the lock is already held
-        if self.redeem_lock.locked():
-            await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
-            return
-
-        valid_codes = []
-        already_redeemed = []
-        for code in codes:
-            if self.is_code_redeemed(code):
-                already_redeemed.append(code)
-            else:
-                valid_codes.append(code)
-
-        if already_redeemed:
-            await interaction.followup.send(
-                f"⚠️ The following codes have already been redeemed and will be skipped: {', '.join(already_redeemed)}",
-                ephemeral=True
-            )
-
-        if not valid_codes:
-            return
-
-        await interaction.followup.send(f"🔢 Redeeming code(s) {', '.join(valid_codes)} for everyone. "
-                                        f"Process might take longer to finish. I will ping you when done.")
-
         try:
-            webhook = await interaction.channel.create_webhook(name="GiftCodeRedeemBot")
-            webhook_url = webhook.url
-            print(f"DEBUG: Created webhook {webhook_url}")
-            
-            task = asyncio.create_task(self.run_redeem(webhook_url, valid_codes, interaction.user.id))
-            self.running_tasks.add(task)
-            task.add_done_callback(self.running_tasks.discard)
-            print("DEBUG: Task created")
+            codes = [c.strip() for c in gift_code.split(';') if c.strip()]
+            if not codes:
+                await interaction.response.send_message("⚠️ No valid codes provided!", ephemeral=True)
+                return
+
+            await interaction.response.defer(thinking=True)
+
+            # Check if the lock is already held
+            if self.redeem_lock.locked():
+                await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
+                return
+
+            valid_codes = []
+            already_redeemed = []
+            for code in codes:
+                if self.is_code_redeemed(code):
+                    already_redeemed.append(code)
+                else:
+                    valid_codes.append(code)
+
+            if already_redeemed:
+                await interaction.followup.send(
+                    f"⚠️ The following codes have already been redeemed and will be skipped: {', '.join(already_redeemed)}",
+                    ephemeral=True
+                )
+
+            if not valid_codes:
+                return
+
+            await interaction.followup.send(f"🔢 Redeeming code(s) {', '.join(valid_codes)} for everyone. "
+                                            f"Process might take longer to finish. I will ping you when done.")
+
+            try:
+                channel = interaction.channel
+                if channel is None:
+                    channel = await self.bot.fetch_channel(interaction.channel_id)
+
+                if isinstance(channel, discord.Thread):
+                    parent_channel = channel.parent
+                    if parent_channel is None:
+                        # Fetch parent channel if not in cache
+                        parent_channel = await self.bot.fetch_channel(channel.parent_id)
+                    webhook = await parent_channel.create_webhook(name="GiftCodeRedeemBot")
+                    webhook_url = f"{webhook.url}?thread_id={channel.id}"
+                elif isinstance(channel, discord.DMChannel):
+                    raise ValueError("Cannot run redeem-for-all in Direct Messages because DMs do not support Webhooks. Please run this command in a server channel.")
+                else:
+                    webhook = await channel.create_webhook(name="GiftCodeRedeemBot")
+                    webhook_url = webhook.url
+
+                print(f"DEBUG: Created webhook {webhook_url}")
+                
+                task = asyncio.create_task(self.run_redeem(webhook_url, valid_codes, interaction.user.id))
+                self.running_tasks.add(task)
+                task.add_done_callback(self.running_tasks.discard)
+                print("DEBUG: Task created")
+            except Exception as e:
+                print(f"DEBUG: Error starting task: {e}")
+                import traceback
+                traceback.print_exc()
+                await interaction.followup.send(f"⚠️ Failed to start redemption process: {e}")
         except Exception as e:
-            print(f"DEBUG: Error starting task: {e}")
-            await interaction.followup.send(f"⚠️ Failed to start redemption process: {e}")
+            print(f"DEBUG: Exception in redeem_code_for_all: {e}")
+            import traceback
+            traceback.print_exc()
 
 
     async def redeem_code_for_player(self, interaction: discord.Interaction, gift_code: str, player_id: str):

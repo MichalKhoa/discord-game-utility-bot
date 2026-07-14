@@ -8,70 +8,26 @@ import hashlib
 import json
 import time
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVICE_ACCOUNT_FILE = os.path.join(PROJECT_ROOT, 'service-account.json')
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE' #playerID.txt on the GDisk
-
-def get_drive_service():
-    # Authenticate using the service account credentials from environment or file
-    google_creds_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if google_creds_json:
-        try:
-            info = json.loads(google_creds_json)
-            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-        except Exception as e:
-            print(f"⚠️ Failed to load Google credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var: {e}")
-            creds = service_account.Credentials.from_service_account_file(
-                SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    else:
-        creds = service_account.Credentials.from_service_account_file(
-            SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-
-    return build('drive', 'v3', credentials=creds)
-
-def download_google_doc(file_id: str, output_filename: str):
-    service = get_drive_service()
-
-    # Export as plain text
-    request = service.files().export_media(fileId=file_id, mimeType='text/plain')
-
-    with io.FileIO(output_filename, 'wb') as fh:
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            print(f"Download {int(status.progress() * 100)}%.")
-
-
-def update_file_if_needed(file_id, local_destination):
-    service = get_drive_service()
-
-    # 1. Fetch metadata (modifiedTime instead of md5)
-    remote_file = service.files().get(fileId=file_id, fields='modifiedTime, name').execute()
-    remote_time_str = remote_file.get('modifiedTime')  # Format: 2023-10-27T10:00:00.000Z
-
-    # 2. Check if local file exists and calculate its MD5
-    needs_update = True
-    # Convert Google Drive ISO 8601 string to a timestamp safely (handles any sub-second length)
-    remote_time = datetime.datetime.fromisoformat(remote_time_str.replace('Z', '+00:00')).timestamp()
-
-    if os.path.exists(local_destination):
-        local_time = os.path.getmtime(local_destination)
-        if local_time >= remote_time:
-            needs_update = False
-
-    # 3. Download only if necessary
-    if needs_update:
-        download_google_doc(file_id, local_destination)
-        print("File updated.")
-    else:
-        print("File up to date.")
+def update_file_from_public_url(doc_id: str, local_destination: str) -> bool:
+    """
+    Downloads the Google Doc as plain text using the public export URL.
+    Always overwrites the local file with the latest version.
+    Returns True if successful, False otherwise.
+    """
+    url = f"https://docs.google.com/document/d/{doc_id}/export?format=txt"
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        content = response.text
+        
+        # Write to local destination
+        with open(local_destination, "w", encoding="utf-8") as f:
+            f.write(content)
+        print("Player IDs file updated successfully from public Google Doc URL.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to download player IDs from Google Doc: {e}")
+        return False
 
 
 # Constants from the original script
