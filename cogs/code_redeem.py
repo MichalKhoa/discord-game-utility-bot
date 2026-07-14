@@ -50,8 +50,8 @@ class CodeRedeem(commands.Cog):
             print("DEBUG: Acquired lock")
             try:
                 # Use the local file path
-                print("DEBUG: Updating file if needed")
-                await asyncio.to_thread(utils.redeem_code.update_file_if_needed, DOC_ID, LOCAL_PLAYER_IDS)
+                print("DEBUG: Syncing player IDs from Google Doc public export URL")
+                await asyncio.to_thread(utils.redeem_code.update_file_from_public_url, DOC_ID, LOCAL_PLAYER_IDS)
                 
                 results = []
                 for code in gift_codes:
