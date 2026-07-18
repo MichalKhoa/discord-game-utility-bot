@@ -55,6 +55,12 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Failed to load Opus: {e}")
 
+    try:
+        import davey
+        print("✅ Davey library is installed and available for voice E2EE.")
+    except ImportError:
+        print("⚠️ Warning: Davey library is NOT installed. Voice connection might fail.")
+
     print(f'Logged in as {bot.user}')
 
 @bot.event
