@@ -3,7 +3,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import MainMenuEmbed
 from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal
-from utils.countdown import play_voice_countdown
+from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 
 
 class MenuButtons(discord.ui.View):
@@ -197,14 +197,22 @@ class RallyCountdownView(discord.ui.View):
         await interaction.response.send_message("🎙️ Starting 14s countdown...", ephemeral=True)
         await play_voice_countdown(interaction, 14)
 
-    @discord.ui.button(label="Custom Countdown", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="Join Voice", style=discord.ButtonStyle.success, row=1)
+    async def join_voice_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc, err = await get_or_connect_vc(interaction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+        else:
+            await interaction.response.send_message(f"🎙️ Connected to **{vc.channel.name}**! Instant countdowns ready.", ephemeral=True)
+
+    @discord.ui.button(label="Custom Countdown", style=discord.ButtonStyle.primary, row=1)
     async def custom_countdown(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(CustomCountdownModal())
 
     @discord.ui.button(label="Stop / Disconnect", style=discord.ButtonStyle.danger, row=1)
     async def stop_countdown(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.guild.voice_client:
-            await interaction.guild.voice_client.disconnect(force=True)
+        stopped = await stop_voice(interaction)
+        if stopped:
             await interaction.response.send_message("⏹️ Stopped countdown and disconnected.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Bot is not connected to a voice channel.", ephemeral=True)

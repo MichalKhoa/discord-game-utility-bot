@@ -83,73 +83,136 @@ def generate_audio_files(count: int):
 
 
 
+_idle_tasks = {}
+
+
+async def _cancel_idle_task(guild_id: int):
+    if guild_id in _idle_tasks:
+        task = _idle_tasks.pop(guild_id)
+        if not task.done():
+            task.cancel()
+
+
+async def _schedule_idle_disconnect(guild: discord.Guild, timeout: int = 300):
+    if not guild:
+        return
+    await _cancel_idle_task(guild.id)
+
+    async def _disconnect_after_delay():
+        try:
+            await asyncio.sleep(timeout)
+            vc = guild.voice_client
+            if vc and vc.is_connected() and not vc.is_playing():
+                print(f"Auto-disconnecting from voice in {guild.name} after {timeout}s idle time.")
+                await vc.disconnect()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _idle_tasks.pop(guild.id, None)
+
+    _idle_tasks[guild.id] = asyncio.create_task(_disconnect_after_delay())
+
+
+async def send_response(interaction_or_ctx, message: str, ephemeral: bool = True):
+    if hasattr(interaction_or_ctx, 'response'):
+        if not interaction_or_ctx.response.is_done():
+            await interaction_or_ctx.response.send_message(message, ephemeral=ephemeral)
+        else:
+            await interaction_or_ctx.followup.send(message, ephemeral=ephemeral)
+    else:
+        await interaction_or_ctx.channel.send(message)
+
+
+async def get_or_connect_vc(interaction_or_ctx):
+    user = interaction_or_ctx.user if hasattr(interaction_or_ctx, 'user') else interaction_or_ctx.author
+    guild = interaction_or_ctx.guild
+
+    if not user.voice or not user.voice.channel:
+        return None, "❌ Join a voice channel first!"
+
+    await _cancel_idle_task(guild.id)
+    vc = guild.voice_client
+
+    if vc and vc.is_connected():
+        if vc.channel != user.voice.channel:
+            await vc.move_to(user.voice.channel)
+            await asyncio.sleep(0.2)
+        # Already connected to target channel - zero setup delay!
+    else:
+        try:
+            vc = await user.voice.channel.connect(timeout=10.0)
+            print(f"Connected to {user.voice.channel.name}")
+            await asyncio.sleep(0.4)
+        except Exception as e:
+            return None, f"❌ Failed to join voice channel: {e}"
+
+    return vc, None
+
+
+async def stop_voice(interaction_or_ctx):
+    guild = interaction_or_ctx.guild
+    if guild and guild.voice_client:
+        await _cancel_idle_task(guild.id)
+        await guild.voice_client.disconnect(force=True)
+        return True
+    return False
+
+
 async def play_voice_countdown(interaction_or_ctx, count: int):
     # 1. Setup Paths IMMEDIATELY
     current_file = Path(__file__).resolve()
     audio_dir = current_file.parent.parent / "audio"
-
-    # Ensure the directory actually exists on the OS
     audio_dir.mkdir(parents=True, exist_ok=True)
 
-    print("--- UBUNTU VOICE START ---")
+    print("--- VOICE COUNTDOWN START ---")
 
-    # 2. Corrected Generation Check
-    # Use the absolute path to check for the file
+    # 2. Check/Generate Audio files
     check_file = audio_dir / f"audioNumber_{count}.mp3"
-
     if not check_file.exists():
         print(f"Generating files in: {audio_dir}")
         await asyncio.to_thread(generate_audio_files, count)
 
-    user = interaction_or_ctx.user if hasattr(interaction_or_ctx, 'user') else interaction_or_ctx.author
-    guild = interaction_or_ctx.guild
+    vc, err_msg = await get_or_connect_vc(interaction_or_ctx)
+    if err_msg:
+        await send_response(interaction_or_ctx, err_msg)
+        return
 
-    if not user.voice:
-        return await interaction_or_ctx.channel.send("❌ Join a voice channel first!")
-
-    if guild.voice_client:
-        await guild.voice_client.disconnect(force=True)
-        await asyncio.sleep(0.5)
-
-    vc = None
     try:
-        vc = await user.voice.channel.connect(timeout=10.0)
-        print(f"Connected to {user.voice.channel.name}")
+        if vc.is_playing():
+            vc.stop()
 
-        await asyncio.sleep(1.5)
         start_time = time.perf_counter()
         for i in range(count, -1, -1):
             if not vc.is_connected():
                 break
 
             file_path = audio_dir / f"audioNumber_{i}.mp3"
-
             if file_path.exists():
                 source = discord.FFmpegPCMAudio(str(file_path), before_options="-loglevel panic")
 
                 if vc.is_playing():
                     vc.stop()
 
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.02)
                 vc.play(source)
-                # print(f"Playing: {file_path.name}")
-            # else:
-            #     print(f"❌ File not found: {file_path}")
 
-            await asyncio.sleep(0.95)
+            await asyncio.sleep(0.98)
+
         end_time = time.perf_counter()
         while vc.is_playing():
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
 
         result_time = end_time - start_time
-        print(f"Countdown to {count} finished in {result_time}s")
+        print(f"Countdown to {count} finished in {result_time:.2f}s")
 
     except Exception as e:
-        print(f"⚠️ Ubuntu Playback Error: {e}")
+        print(f"⚠️ Voice Playback Error: {e}")
 
     finally:
+        # Keep connection open for instant subsequent countdowns!
+        # Schedule auto-disconnect after 5 minutes of idle inactivity.
         if vc and vc.is_connected():
-            print("Disconnecting...")
-            await vc.disconnect()
+            await _schedule_idle_disconnect(interaction_or_ctx.guild, timeout=300)
+
 
 # generate_audio_files(10)
