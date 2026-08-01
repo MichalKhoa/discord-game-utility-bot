@@ -87,31 +87,36 @@ SESSION = requests.Session()
 
 
 def get_headers():
-    """Randomized browser-like headers, rotated per request to avoid bot detection."""
+    """Randomized browser-like headers with proper user-agent alignment and strict browser header ordering."""
     browser, versions = random.choice(BROWSER_PROFILES)
     version = random.choice(versions)
     platform, sec_platform = random.choice(PLATFORMS)
 
     if browser == 'Edge':
         sec_ch_ua = f'"Not A(B)rand";v="8", "Chromium";v="{version}", "Microsoft Edge";v="{version}"'
+        user_agent = (f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      f"Chrome/{version}.0.0.0 Safari/537.36 Edg/{version}.0.0.0")
     else:
         sec_ch_ua = f'"Not:A-Brand";v="99", "{browser}";v="{version}", "Chromium";v="{version}"'
+        user_agent = (f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      f"Chrome/{version}.0.0.0 Safari/537.36")
 
     return {
-        'accept': 'application/json, text/plain, */*',
-        'accept-encoding': 'gzip, deflate',
-        'accept-language': 'en-US,en;q=0.9',
-        'content-type': 'application/x-www-form-urlencoded',
-        'user-agent': (f"Mozilla/5.0 ({platform}) AppleWebKit/537.36 (KHTML, like Gecko) "
-                       f"Chrome/{version}.0.0.0 Safari/537.36"),
-        'origin': ORIGIN,
-        'referer': ORIGIN + '/',
+        'host': 'kingshot-giftcode.centurygame.com',
         'sec-ch-ua': sec_ch_ua,
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': sec_platform,
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
+        'upgrade-insecure-requests': '1',
+        'user-agent': user_agent,
+        'accept': 'application/json, text/plain, */*',
+        'origin': ORIGIN,
         'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
+        'referer': ORIGIN + '/',
+        'accept-encoding': 'gzip, deflate, br',
+        'accept-language': 'en-US,en;q=0.9',
+        'content-type': 'application/x-www-form-urlencoded',
     }
 
 
@@ -369,6 +374,8 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
             continue
 
         for fid, kid in ready:
+            SESSION.cookies.clear()
+            SESSION.headers.clear()
             SESSION.headers.update(get_headers())
             status = "Processing error"
             for attempt in range(MAX_FID_ATTEMPTS):
@@ -412,7 +419,8 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
                 stop_processing = True
                 break
 
-            time.sleep(DELAY + random.uniform(0, 0.5))
+            human_delay = max(0.5, random.gauss(DELAY + 0.2, 0.3))
+            time.sleep(human_delay)
 
     end_time_CPU = process_time()
     end_time = perf_counter()
