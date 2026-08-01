@@ -158,26 +158,18 @@ class CodeRedeem(commands.Cog):
         await interaction.response.defer(thinking=True)
         
         try:
-            player_info = await asyncio.to_thread(utils.redeem_code.send_signed_post, "player", {"fid": player_id})
-            
-            if player_info.get("code") != 0:
-                await interaction.followup.send(f"❌ Player ID `{player_id}` is invalid. Please double-check it!")
-                return
-                
-            nickname = player_info.get("data", {}).get("nickname", "Unknown")
-            
             results = []
             for code in codes:
                 redeem_result = await asyncio.to_thread(
                     utils.redeem_code.send_signed_post,
                     "gift_code",
-                    {"fid": player_id, "cdk": code}
+                    {"fid": player_id, "cdk": code, "kid": "278"}
                 )
                 
                 msg = redeem_result.get('msg', '').replace('.', '')
                 if msg == "TIMEOUT RETRY":
                     print(f"Retrying single player for code {code}...")
-                    retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code)
+                    retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, "278")
                     if retry_result:
                         redeem_result = retry_result
                         msg = retry_result.get('msg', '').replace('.', '')
@@ -193,7 +185,7 @@ class CodeRedeem(commands.Cog):
                 
             combined_results = "\n".join(results)
             await interaction.followup.send(
-                f"👤 **Player**: {nickname} (`{player_id}`)\n" + combined_results
+                f"👤 **Player ID**: `{player_id}` (Kingdom 278)\n" + combined_results
             )
         except Exception as e:
             print(f"DEBUG: Error in redeem_code_for_player: {e}")
