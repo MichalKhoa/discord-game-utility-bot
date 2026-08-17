@@ -5,7 +5,7 @@ from utils.embeds import MainMenuEmbed
 from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal, SearchPlayerModal
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 from databases.player_database import PlayerDatabase
-from cogs.player_manager import PlayerAddModal, PlayerListView
+from cogs.player_manager import PlayerAddModal, PlayerBatchAddModal, PlayerListView
 
 
 class MenuButtons(discord.ui.View):
@@ -38,8 +38,8 @@ class MenuButtons(discord.ui.View):
             inline=False
         )
         player_menu_panel.add_field(
-            name="➕ Add / 🔍 Search & Edit",
-            value="> Register new players or edit kingdom/FID with live API check.",
+            name="➕ Add / 📝 Batch Import / 🔍 Search & Edit",
+            value="> Register single players, paste multi-line batches, or search/edit.",
             inline=False
         )
         player_menu_panel.add_field(
@@ -96,6 +96,10 @@ class PlayerMenuButtons(discord.ui.View):
     @discord.ui.button(label="Add Player", style=discord.ButtonStyle.success, emoji="➕", row=0)
     async def add_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PlayerAddModal(self.db))
+
+    @discord.ui.button(label="Batch Import", style=discord.ButtonStyle.success, emoji="📝", row=0)
+    async def batch_import_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PlayerBatchAddModal(self.db))
 
     @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.primary, emoji="🔍", row=0)
     async def search_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
