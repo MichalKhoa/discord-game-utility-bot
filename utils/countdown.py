@@ -125,9 +125,9 @@ async def send_response(interaction_or_ctx, message: str, ephemeral: bool = True
 
 async def get_or_connect_vc(interaction_or_ctx):
     user = interaction_or_ctx.user if hasattr(interaction_or_ctx, 'user') else interaction_or_ctx.author
-    guild = interaction_or_ctx.guild
+    guild = interaction_or_ctx if isinstance(interaction_or_ctx, discord.Guild) else interaction_or_ctx.guild
 
-    if not user.voice or not user.voice.channel:
+    if not user or not user.voice or not user.voice.channel:
         return None, "❌ Join a voice channel first!"
 
     await _cancel_idle_task(guild.id)
@@ -137,7 +137,6 @@ async def get_or_connect_vc(interaction_or_ctx):
         if vc.channel != user.voice.channel:
             await vc.move_to(user.voice.channel)
             await asyncio.sleep(0.2)
-        # Already connected to target channel - zero setup delay!
     else:
         try:
             vc = await user.voice.channel.connect(timeout=10.0)
@@ -146,14 +145,19 @@ async def get_or_connect_vc(interaction_or_ctx):
         except Exception as e:
             return None, f"❌ Failed to join voice channel: {e}"
 
+    # Schedule idle disconnect (300s / 5 mins) after connecting
+    await _schedule_idle_disconnect(guild, timeout=300)
     return vc, None
 
 
-async def stop_voice(interaction_or_ctx):
-    guild = interaction_or_ctx.guild
+async def stop_voice(interaction_or_ctx_or_guild):
+    guild = interaction_or_ctx_or_guild if isinstance(interaction_or_ctx_or_guild, discord.Guild) else getattr(interaction_or_ctx_or_guild, 'guild', None)
     if guild and guild.voice_client:
         await _cancel_idle_task(guild.id)
-        await guild.voice_client.disconnect(force=True)
+        try:
+            await guild.voice_client.disconnect(force=True)
+        except Exception:
+            pass
         return True
     return False
 

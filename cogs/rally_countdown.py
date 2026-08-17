@@ -76,6 +76,26 @@ class RallyCountdown(commands.Cog):
         )
         await ctx.send(embed=embed, view=RallyCountdownView(self.bot))
 
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """Auto-disconnects if all human members leave the voice channel."""
+        if member.bot:
+            return
+
+        guild = member.guild
+        vc = guild.voice_client
+        if not vc or not vc.is_connected() or not vc.channel:
+            return
+
+        # Check if the member left the bot's channel
+        if before.channel == vc.channel and after.channel != vc.channel:
+            # Count remaining non-bot members
+            humans = [m for m in vc.channel.members if not m.bot]
+            if len(humans) == 0:
+                print(f"Voice channel '{vc.channel.name}' in '{guild.name}' is empty. Auto-disconnecting bot.")
+                await stop_voice(guild)
+
+
 async def setup(bot):
     print("RallyCountdown cog loaded")
     await bot.add_cog(RallyCountdown(bot))
