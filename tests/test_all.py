@@ -514,5 +514,22 @@ class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(q[1], "Eat tacos everyday")
 
 
+class TestMenuViews(unittest.TestCase):
+    def test_menu_views_instantiation(self):
+        from utils.views import MenuButtons, GameMenuButtons, PlayerMenuButtons, UtilityMenuButtons
+        mock_bot = MagicMock()
+        v_main = MenuButtons(mock_bot)
+        self.assertEqual(len(v_main.children), 3)
+
+        v_game = GameMenuButtons(mock_bot)
+        self.assertEqual(len(v_game.children), 2)
+
+        v_player = PlayerMenuButtons(mock_bot)
+        self.assertGreaterEqual(len(v_player.children), 5)
+
+        v_util = UtilityMenuButtons(mock_bot)
+        self.assertGreaterEqual(len(v_util.children), 4)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -77,6 +77,26 @@ class MenuButtons(discord.ui.View):
         await interaction.response.edit_message(embed=utility_menu_panel, view=UtilityMenuButtons(self.bot))
 
 
+class GameMenuButtons(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=43200)
+        self.bot = bot
+
+    @discord.ui.button(label="Would You Rather?", style=discord.ButtonStyle.primary, emoji="🤷", row=0)
+    async def wyr_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        wyr_cog = self.bot.get_cog("Wyr")
+        if wyr_cog:
+            await wyr_cog.start_wyr_game(interaction)
+        else:
+            await interaction.response.send_message("❌ Wyr game module not loaded.", ephemeral=True)
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=1)
+    async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = MainMenuEmbed(self.bot)
+        view = MenuButtons(self.bot)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
 class PlayerMenuButtons(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
