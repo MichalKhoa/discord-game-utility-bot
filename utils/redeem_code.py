@@ -385,7 +385,16 @@ def load_players(file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM):
     return players
 
 
-def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM):
+def make_progress_bar(current: int, total: int, length: int = 15) -> str:
+    """Returns a visual unicode progress bar string."""
+    if total <= 0:
+        return "░" * length
+    percent = min(1.0, max(0.0, current / total))
+    filled = int(round(length * percent))
+    return "█" * filled + "░" * (length - filled)
+
+
+def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM, progress_callback=None):
     start_time = perf_counter()
     start_time_CPU = process_time()
 
@@ -407,6 +416,12 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
         "rate_limited": 0,
         "requests": 0,
     }
+
+    if progress_callback:
+        try:
+            progress_callback(0, len(players), counters, False, 0.0)
+        except Exception:
+            pass
 
     retry_queue = {}
     cooldowns = {}
@@ -472,6 +487,12 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
             else:
                 counters["errors"] += 1
 
+            if progress_callback:
+                try:
+                    progress_callback(len(processed_fids), len(players), counters, False, perf_counter() - start_time)
+                except Exception:
+                    pass
+
             consecutive_failures = consecutive_failures + 1 if status == TRANSPORT_FAILURE else 0
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 fatal_reason = f"{MAX_CONSECUTIVE_FAILURES} consecutive API connection failures"
@@ -485,6 +506,12 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
     end_time = perf_counter()
     result_time_CPU = end_time_CPU - start_time_CPU
     result_time = end_time - start_time
+
+    if progress_callback:
+        try:
+            progress_callback(len(processed_fids), len(players), counters, True, result_time)
+        except Exception:
+            pass
 
     if fatal_reason:
         return f"Giftcode {giftCode} stopped: {fatal_reason}"

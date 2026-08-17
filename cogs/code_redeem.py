@@ -18,6 +18,54 @@ LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "players.db")
 LEGACY_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
 
 
+def format_time(seconds: float) -> str:
+    """Format seconds into readable min/sec string."""
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def build_batch_progress_embed(
+    current_code: str,
+    code_index: int,
+    total_codes: int,
+    processed: int,
+    total: int,
+    counters: dict,
+    elapsed: float
+) -> discord.Embed:
+    """Builds a dynamic real-time progress embed with visual bar and ETA."""
+    percent = (processed / total * 100) if total > 0 else 0
+    bar = utils.redeem_code.make_progress_bar(processed, total, length=16)
+
+    if processed > 0 and total > processed:
+        rate = processed / max(1.0, elapsed)
+        eta_seconds = (total - processed) / max(0.1, rate)
+        eta_str = format_time(eta_seconds)
+    elif processed >= total and total > 0:
+        eta_str = "Finishing..."
+    else:
+        eta_str = "Calculating..."
+
+    embed = discord.Embed(
+        title=f"⏳ Batch Redemption in Progress ({code_index}/{total_codes})",
+        colour=discord.Colour.gold()
+    )
+    embed.description = (
+        f"**Active Code**: `{current_code}`\n\n"
+        f"`{bar}` **{percent:.1f}%** ({processed}/{total} players)\n\n"
+        f"• 🟢 **Success**: `{counters.get('success', 0)}`\n"
+        f"• 📦 **Already Claimed**: `{counters.get('already_redeemed', 0)}`\n"
+        f"• 🟡 **Wrong Kingdom / Flagged**: `{counters.get('wrong_kingdom', 0)}`\n"
+        f"• ⚠️ **Rate Limited**: `{counters.get('rate_limited', 0)}`\n\n"
+        f"⏱️ **Elapsed**: `{format_time(elapsed)}`  •  ⏳ **Est. Remaining**: `~{eta_str}`"
+    )
+    embed.set_footer(text="Live updates every ~4s • You will be pinged when finished.")
+    return embed
+
+
 class ConfirmRedeemView(discord.ui.View):
     def __init__(self, author_id: int, on_confirm, on_cancel=None):
         super().__init__(timeout=90)
@@ -94,39 +142,107 @@ class CodeRedeem(commands.Cog):
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
 
-    async def run_redeem(self, webhook_url, gift_codes, user_id):
+    async def run_redeem(self, channel: discord.abc.Messageable, gift_codes: List[str], user_id: int):
         print(f"DEBUG: Starting run_redeem for {gift_codes}")
         async with self.redeem_lock:
             print("DEBUG: Acquired lock")
+            progress_msg = None
             try:
                 await self.db.init_db()
 
+                init_embed = discord.Embed(
+                    title="⏳ Initializing Batch Redemption...",
+                    description=f"Preparing to redeem `{', '.join(gift_codes)}`...",
+                    colour=discord.Colour.gold()
+                )
+                progress_msg = await channel.send(embed=init_embed)
+
                 results = []
-                for code in gift_codes:
-                    print(f"DEBUG: Starting redeem_for_all for {code}")
-                    stats = await asyncio.to_thread(utils.redeem_code.redeem_for_all, code, LOCAL_PLAYER_IDS)
-                    print(f"DEBUG: Finished redeem_for_all for {code}")
-                    results.append(stats)
+                for idx, code in enumerate(gift_codes, start=1):
+                    progress_state = {
+                        "current_code": code,
+                        "code_index": idx,
+                        "total_codes": len(gift_codes),
+                        "processed": 0,
+                        "total": 0,
+                        "counters": {},
+                        "elapsed": 0.0,
+                    }
+                    stop_updater = asyncio.Event()
 
-                    if stats.startswith("✅") or stats.startswith("Giftcode"):
-                        await self.db.log_redeemed_code(code, redeemed_by=user_id)
+                    def on_progress(processed, total, counters, is_done, elapsed):
+                        progress_state["processed"] = processed
+                        progress_state["total"] = total
+                        progress_state["counters"] = counters
+                        progress_state["elapsed"] = elapsed
 
-                combined_stats = "\n\n".join(results)
-                async with aiohttp.ClientSession() as session:
-                    webhook = discord.Webhook.from_url(webhook_url, session=session)
-                    await webhook.send(f"<@{user_id}>\n" + combined_stats)
+                    async def update_display():
+                        while not stop_updater.is_set():
+                            try:
+                                if progress_state["total"] > 0:
+                                    embed = build_batch_progress_embed(
+                                        current_code=progress_state["current_code"],
+                                        code_index=progress_state["code_index"],
+                                        total_codes=progress_state["total_codes"],
+                                        processed=progress_state["processed"],
+                                        total=progress_state["total"],
+                                        counters=progress_state["counters"],
+                                        elapsed=progress_state["elapsed"]
+                                    )
+                                    if progress_msg:
+                                        await progress_msg.edit(embed=embed)
+                            except Exception as e:
+                                print(f"Progress update error: {e}")
+                            await asyncio.sleep(4.0)
+
+                    updater_task = asyncio.create_task(update_display())
+
+                    try:
+                        print(f"DEBUG: Starting redeem_for_all for {code}")
+                        stats = await asyncio.to_thread(
+                            utils.redeem_code.redeem_for_all,
+                            code,
+                            LOCAL_PLAYER_IDS,
+                            "278",
+                            on_progress
+                        )
+                        print(f"DEBUG: Finished redeem_for_all for {code}")
+                        results.append(stats)
+
+                        if stats.startswith("✅") or stats.startswith("Giftcode"):
+                            await self.db.log_redeemed_code(code, redeemed_by=user_id)
+                    finally:
+                        stop_updater.set()
+                        updater_task.cancel()
+
+                # Build final summary embed
+                final_embed = discord.Embed(
+                    title="✅ Batch Redemption Completed!",
+                    colour=discord.Colour.green()
+                )
+                final_embed.description = "\n\n".join(results)
+                final_embed.set_footer(text="All player accounts processed successfully.")
+
+                if progress_msg:
+                    await progress_msg.edit(embed=final_embed)
+                else:
+                    await channel.send(embed=final_embed)
+
+                await channel.send(f"<@{user_id}> ✅ Finished redeeming gift code(s): `{', '.join(gift_codes)}`!")
+
             except Exception as e:
                 print(f"DEBUG: Exception in run_redeem: {e}")
-                async with aiohttp.ClientSession() as session:
-                    webhook = discord.Webhook.from_url(webhook_url, session=session)
-                    await webhook.send(f"❌ Error during redemption: {e}")
-            finally:
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        webhook = discord.Webhook.from_url(webhook_url, session=session)
-                        await webhook.delete()
-                except Exception as e:
-                    print(f"DEBUG: Error deleting webhook: {e}")
+                import traceback
+                traceback.print_exc()
+                err_embed = discord.Embed(
+                    title="❌ Redemption Error",
+                    description=f"An error occurred during the batch process:\n`{e}`",
+                    colour=discord.Colour.red()
+                )
+                if progress_msg:
+                    await progress_msg.edit(embed=err_embed)
+                else:
+                    await channel.send(embed=err_embed)
 
     async def _execute_batch_redemption(self, interaction: discord.Interaction, codes: List[str]):
         """Dispatches background redemption task after confirmation."""
@@ -135,8 +251,8 @@ class CodeRedeem(commands.Cog):
             return
 
         await interaction.followup.send(
-            f"🔢 Redeeming code(s) `{', '.join(codes)}` for everyone.\n"
-            f"Process might take longer to finish. I will ping you when done."
+            f"🔢 Initiating redemption for `{', '.join(codes)}`.\n"
+            f"Live progress updates will appear below and you will be pinged when finished."
         )
 
         try:
@@ -144,19 +260,7 @@ class CodeRedeem(commands.Cog):
             if channel is None:
                 channel = await self.bot.fetch_channel(interaction.channel_id)
 
-            if isinstance(channel, discord.Thread):
-                parent_channel = channel.parent
-                if parent_channel is None:
-                    parent_channel = await self.bot.fetch_channel(channel.parent_id)
-                webhook = await parent_channel.create_webhook(name="GiftCodeRedeemBot")
-                webhook_url = f"{webhook.url}?thread_id={channel.id}"
-            elif isinstance(channel, discord.DMChannel):
-                raise ValueError("Cannot run redeem-for-all in Direct Messages. Please run in a server channel.")
-            else:
-                webhook = await channel.create_webhook(name="GiftCodeRedeemBot")
-                webhook_url = webhook.url
-
-            task = asyncio.create_task(self.run_redeem(webhook_url, codes, interaction.user.id))
+            task = asyncio.create_task(self.run_redeem(channel, codes, interaction.user.id))
             self.running_tasks.add(task)
             task.add_done_callback(self.running_tasks.discard)
         except Exception as e:
