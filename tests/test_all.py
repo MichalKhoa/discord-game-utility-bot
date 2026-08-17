@@ -464,6 +464,33 @@ class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(d_count, 1)
             self.assertIsNone(await db.get_player("2001"))
 
+    async def test_csv_export_import_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_roundtrip.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            # Insert initial players
+            await db.upsert_player(fid="3001", kid="278", name="Original One", alliance="NOR")
+            await db.upsert_player(fid="3002", kid="305", name="Original Two", alliance="OvO")
+
+            # Export to CSV
+            csv_data = await db.export_csv()
+
+            # Append a new player to the CSV text
+            modified_csv = csv_data + "\n3003,278,New Guy,NOR,ACTIVE,0,\n"
+
+            # Parse and re-import
+            parsed = db.parse_raw_player_text(modified_csv)
+            self.assertEqual(len(parsed), 3)
+            self.assertEqual(parsed[2]["fid"], "3003")
+            self.assertEqual(parsed[2]["name"], "New Guy")
+            self.assertEqual(parsed[2]["alliance"], "NOR")
+
+            await db.bulk_upsert_players(parsed)
+            all_players = await db.get_all_players()
+            self.assertEqual(len(all_players), 3)
+
 
 
 

@@ -106,45 +106,86 @@ class PlayerDatabase:
     @staticmethod
     def parse_raw_player_text(content: str, default_kingdom: str = "278") -> List[Dict[str, Any]]:
         """
-        Parses raw text containing player IDs, optionally with # Alliance headers,
-        FID KID Name formats, or comma/tab separated lines.
+        Parses raw text or CSV containing player IDs.
+        Supports:
+        - Exported CSV: fid,kid,name,alliance,status,warning_count,warning_reason
+        - Standard text with # Alliance headers: 117280427 278 Name or 117280427 Name
+        - Comma/tab separated lists: 117280427, 278, Name, NOR
         """
         current_alliance = ""
         players = []
-        for raw_line in content.splitlines():
+
+        lines = content.splitlines()
+        try:
+            csv_reader = list(csv.reader(lines))
+        except Exception:
+            csv_reader = [l.split(',') for l in lines]
+
+        for raw_line, csv_parts in zip(lines, csv_reader):
             line = raw_line.strip()
             if not line:
                 continue
+
             if line.startswith('#'):
                 header = line.lstrip('#').strip()
                 if header:
                     current_alliance = header
                 continue
 
-            parts = [p.strip() for p in line.replace(',', ' ').replace('\t', ' ').split() if p.strip()]
-            if not parts or not parts[0].isdigit():
+            if ',' in raw_line:
+                clean_parts = [p.strip() for p in csv_parts if p.strip()]
+            else:
+                clean_parts = [p.strip() for p in line.replace('\t', ' ').split() if p.strip()]
+
+            if not clean_parts:
                 continue
 
-            fid = parts[0]
+            if clean_parts[0].lower() in ("fid", "player_id", "player id"):
+                continue
+
+            if not clean_parts[0].isdigit():
+                continue
+
+            fid = clean_parts[0]
             kid = default_kingdom
             name = ""
             alliance = current_alliance
+            status = "ACTIVE"
+            warning_count = 0
+            warning_reason = None
 
-            if len(parts) > 1:
-                if parts[1].isdigit() and int(parts[1]) <= 999999:
-                    kid = parts[1]
-                    name = " ".join(parts[2:]) if len(parts) > 2 else ""
-                else:
-                    name = " ".join(parts[1:])
+            if ',' in raw_line:
+                if len(clean_parts) > 1 and clean_parts[1].isdigit() and int(clean_parts[1]) <= 999999:
+                    kid = clean_parts[1]
+                    name = clean_parts[2] if len(clean_parts) > 2 else ""
+                    if len(clean_parts) > 3:
+                        alliance = clean_parts[3] or current_alliance
+                    if len(clean_parts) > 4 and clean_parts[4].upper() in ("ACTIVE", "FLAGGED", "DISABLED"):
+                        status = clean_parts[4].upper()
+                    if len(clean_parts) > 5 and clean_parts[5].isdigit():
+                        warning_count = int(clean_parts[5])
+                    if len(clean_parts) > 6:
+                        warning_reason = clean_parts[6] or None
+                elif len(clean_parts) > 1:
+                    name = clean_parts[1]
+                    if len(clean_parts) > 2:
+                        alliance = clean_parts[2] or current_alliance
+            else:
+                if len(clean_parts) > 1:
+                    if clean_parts[1].isdigit() and int(clean_parts[1]) <= 999999:
+                        kid = clean_parts[1]
+                        name = " ".join(clean_parts[2:]) if len(clean_parts) > 2 else ""
+                    else:
+                        name = " ".join(clean_parts[1:])
 
             players.append({
                 "fid": fid,
                 "kid": kid,
                 "name": name,
                 "alliance": alliance,
-                "status": "ACTIVE",
-                "warning_count": 0,
-                "warning_reason": None
+                "status": status,
+                "warning_count": warning_count,
+                "warning_reason": warning_reason
             })
         return players
 
