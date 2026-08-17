@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import aiohttp
 import io
 from typing import Optional, List
 
@@ -195,6 +196,80 @@ class PlayerAddModal(discord.ui.Modal, title="Add New Player"):
             embed.add_field(name="Kingdom", value=f"`{kid}`", inline=True)
             embed.add_field(name="API Warning", value=f"`{verify_msg}`", inline=False)
             await interaction.followup.send(embed=embed)
+
+
+class PlayerBatchAddModal(discord.ui.Modal, title="Batch Add / Paste Players"):
+    data_input = discord.ui.TextInput(
+        label="Player List (Multi-line)",
+        style=discord.TextStyle.paragraph,
+        placeholder="# NOR\n117280427 278 Player1\n117280428 278 Player2\n# OvO\n118999999 Player3",
+        required=True,
+        max_length=4000
+    )
+    default_kid_input = discord.ui.TextInput(
+        label="Default Kingdom ID",
+        default="278",
+        min_length=1,
+        max_length=10,
+        required=False
+    )
+
+    def __init__(self, db: PlayerDatabase):
+        super().__init__()
+        self.db = db
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        raw_text = self.data_input.value.strip()
+        default_kid = self.default_kid_input.value.strip() or "278"
+
+        players = self.db.parse_raw_player_text(raw_text, default_kingdom=default_kid)
+        if not players:
+            await interaction.followup.send("❌ No valid player IDs found in the submitted text.", ephemeral=True)
+            return
+
+        imported_count = await self.db.bulk_upsert_players(players)
+        alliances = {p.get("alliance") for p in players if p.get("alliance")}
+        alliance_summary = f" across **{len(alliances)}** alliance(s)" if alliances else ""
+
+        embed = discord.Embed(
+            title="✅ Batch Players Added / Updated",
+            description=f"Successfully processed **{imported_count}** player ID(s){alliance_summary}.",
+            colour=discord.Colour.green()
+        )
+        if alliances:
+            embed.add_field(name="Alliances Included", value=", ".join(f"`{a}`" for a in sorted(alliances)[:10]), inline=False)
+        embed.set_footer(text="Use /player sync-names to populate in-game names and verify accounts.")
+        await interaction.followup.send(embed=embed)
+
+
+class ConfirmActionView(discord.ui.View):
+    def __init__(self, author_id: int, on_confirm, prompt: str = "Proceed with this batch action?"):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.on_confirm = on_confirm
+        self.prompt = prompt
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Action cancelled.", embed=None, view=self)
 
 
 class PlayerListView(discord.ui.View):
@@ -437,46 +512,129 @@ class PlayerManager(commands.Cog):
         await interaction.followup.send("📥 Here is the current player export:", file=file, ephemeral=True)
 
     @player_group.command(name="import", description="Import players from an attached CSV or text file")
-    @app_commands.describe(file="CSV or TXT file to import")
-    async def import_file_cmd(self, interaction: discord.Interaction, file: discord.Attachment):
+    @app_commands.describe(
+        file="CSV or TXT file to import",
+        default_kingdom="Default Kingdom ID for entries without KID (default: 278)"
+    )
+    async def import_file_cmd(self, interaction: discord.Interaction, file: discord.Attachment, default_kingdom: Optional[str] = "278"):
         if not (file.filename.endswith(".csv") or file.filename.endswith(".txt")):
             await interaction.response.send_message("❌ Please upload a `.csv` or `.txt` file.", ephemeral=True)
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         content_bytes = await file.read()
         content = content_bytes.decode("utf-8", errors="replace")
 
-        imported_count = 0
-        players_to_insert = []
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = [p.strip() for p in line.replace(',', ' ').split() if p.strip()]
-            if not parts or not parts[0].isdigit():
-                continue
-            fid = parts[0]
-            kid = parts[1] if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) <= 999999 else "278"
-            name = parts[2] if len(parts) > 2 else ""
-            players_to_insert.append({
-                "fid": fid,
-                "kid": kid,
-                "name": name,
-                "alliance": "",
-                "status": "ACTIVE",
-                "warning_count": 0,
-                "warning_reason": None
-            })
+        default_kid = str(default_kingdom or "278").strip()
+        players = self.db.parse_raw_player_text(content, default_kingdom=default_kid)
+        if not players:
+            await interaction.followup.send("❌ No valid player IDs found in the uploaded file.", ephemeral=True)
+            return
 
-        if players_to_insert:
-            imported_count = await self.db.bulk_upsert_players(players_to_insert)
+        imported_count = await self.db.bulk_upsert_players(players)
+        alliances = {p.get("alliance") for p in players if p.get("alliance")}
+        alliance_summary = f" across **{len(alliances)}** alliance(s)" if alliances else ""
 
-        await interaction.followup.send(f"✅ Imported/Updated **{imported_count}** player IDs.")
+        embed = discord.Embed(
+            title="✅ File Import Complete",
+            description=f"Successfully imported/updated **{imported_count}** player ID(s){alliance_summary}.",
+            colour=discord.Colour.green()
+        )
+        if alliances:
+            embed.add_field(name="Alliances Included", value=", ".join(f"`{a}`" for a in sorted(alliances)[:10]), inline=False)
+        embed.set_footer(text="Use /player sync-names to populate in-game nicknames and verify accounts.")
+        await interaction.followup.send(embed=embed)
 
-    @player_group.command(name="sync-names", description="Auto-sync in-game nicknames and kingdoms from Century Games API")
-    @app_commands.describe(alliance="Optional: only sync players in this alliance")
-    async def sync_names_cmd(self, interaction: discord.Interaction, alliance: Optional[str] = None):
+    @player_group.command(name="batch-add", description="Paste multi-line player IDs and alliances into the registry")
+    @app_commands.describe(
+        text="Optional: direct multi-line text (e.g. # ALLIANCE\\nFID KID Name). If empty, opens paste modal",
+        default_kingdom="Default Kingdom ID for entries without KID (default: 278)"
+    )
+    async def batch_add_cmd(self, interaction: discord.Interaction, text: Optional[str] = None, default_kingdom: Optional[str] = "278"):
+        if text:
+            await interaction.response.defer(thinking=True)
+            default_kid = str(default_kingdom or "278").strip()
+            players = self.db.parse_raw_player_text(text, default_kingdom=default_kid)
+            if not players:
+                await interaction.followup.send("❌ No valid player IDs found in the submitted text.", ephemeral=True)
+                return
+            imported_count = await self.db.bulk_upsert_players(players)
+            alliances = {p.get("alliance") for p in players if p.get("alliance")}
+            alliance_summary = f" across **{len(alliances)}** alliance(s)" if alliances else ""
+            embed = discord.Embed(
+                title="✅ Batch Players Added / Updated",
+                description=f"Successfully processed **{imported_count}** player ID(s){alliance_summary}.",
+                colour=discord.Colour.green()
+            )
+            if alliances:
+                embed.add_field(name="Alliances Included", value=", ".join(f"`{a}`" for a in sorted(alliances)[:10]), inline=False)
+            embed.set_footer(text="Use /player sync-names to populate in-game names and verify accounts.")
+            await interaction.followup.send(embed=embed)
+        else:
+            modal = PlayerBatchAddModal(self.db)
+            if default_kingdom:
+                modal.default_kid_input.default = str(default_kingdom).strip()
+            await interaction.response.send_modal(modal)
+
+    @player_group.command(name="sync-doc", description="Sync player list directly from a public Google Doc or text URL")
+    @app_commands.describe(
+        doc_id_or_url="Google Doc ID or public plain text URL (leave empty to use default Doc ID)",
+        default_kingdom="Default Kingdom ID (default: 278)"
+    )
+    async def sync_doc_cmd(self, interaction: discord.Interaction, doc_id_or_url: Optional[str] = None, default_kingdom: Optional[str] = "278"):
+        await interaction.response.defer(thinking=True)
+        default_kid = str(default_kingdom or "278").strip()
+
+        target = (doc_id_or_url or "13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE").strip()
+        if target.startswith("http://") or target.startswith("https://"):
+            if "docs.google.com/document/d/" in target:
+                try:
+                    target_id = target.split("/d/")[1].split("/")[0]
+                    url = f"https://docs.google.com/document/d/{target_id}/export?format=txt"
+                except Exception:
+                    url = target
+            else:
+                url = target
+        else:
+            url = f"https://docs.google.com/document/d/{target}/export?format=txt"
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                    if resp.status != 200:
+                        await interaction.followup.send(f"❌ Failed to fetch document. HTTP Status: `{resp.status}`", ephemeral=True)
+                        return
+                    content = await resp.text()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error downloading document: `{e}`", ephemeral=True)
+            return
+
+        players = self.db.parse_raw_player_text(content, default_kingdom=default_kid)
+        if not players:
+            await interaction.followup.send("⚠️ Document downloaded, but no valid player IDs were found in the content.", ephemeral=True)
+            return
+
+        imported_count = await self.db.bulk_upsert_players(players)
+        alliances = {p.get("alliance") for p in players if p.get("alliance")}
+
+        embed = discord.Embed(
+            title="🔄 Google Doc / Remote Sync Complete",
+            colour=discord.Colour.green()
+        )
+        embed.add_field(name="Source", value=f"`{target[:40]}`", inline=True)
+        embed.add_field(name="Players Synced", value=str(imported_count), inline=True)
+        embed.add_field(name="Alliances Found", value=str(len(alliances)), inline=True)
+        if alliances:
+            embed.add_field(name="Alliances", value=", ".join(f"`{a}`" for a in sorted(alliances)[:15]), inline=False)
+        embed.set_footer(text="Database successfully updated from remote document.")
+        await interaction.followup.send(embed=embed)
+
+    @player_group.command(name="sync-names", description="Auto-sync in-game nicknames and kingdoms concurrently from Century Games API")
+    @app_commands.describe(
+        alliance="Optional: only sync players in this alliance",
+        concurrency="Number of parallel API requests (default: 8, max: 15)"
+    )
+    async def sync_names_cmd(self, interaction: discord.Interaction, alliance: Optional[str] = None, concurrency: Optional[int] = 8):
         await interaction.response.defer(thinking=True)
 
         if alliance:
@@ -489,46 +647,56 @@ class PlayerManager(commands.Cog):
             return
 
         total = len(players)
+        concurrency_limit = max(1, min(concurrency or 8, 15))
+        sem = asyncio.Semaphore(concurrency_limit)
+
+        status_msg = await interaction.followup.send(f"🔄 Syncing {total} player names with {concurrency_limit} concurrent workers... (0%)")
+
+        completed = 0
         updated = 0
         unchanged = 0
         failed = 0
         changes_log = []
+        lock = asyncio.Lock()
 
-        status_msg = await interaction.followup.send(f"🔄 Syncing {total} player names from Century Games API... (0%)")
+        async def worker(player_dict: dict):
+            nonlocal completed, updated, unchanged, failed
+            fid = str(player_dict.get("fid", "")).strip()
+            current_name = str(player_dict.get("name", "")).strip()
+            current_kid = str(player_dict.get("kid", "278")).strip()
 
-        for idx, p in enumerate(players):
-            fid = str(p.get("fid", "")).strip()
-            current_name = str(p.get("name", "")).strip()
-            current_kid = str(p.get("kid", "278")).strip()
+            async with sem:
+                info = await discord.utils.maybe_coroutine(
+                    utils.redeem_code.fetch_player_info, fid, current_kid
+                )
 
-            info = await discord.utils.maybe_coroutine(
-                utils.redeem_code.fetch_player_info, fid, current_kid
-            )
+            async with lock:
+                completed += 1
+                if info.get("success"):
+                    new_name = info.get("nickname", "").strip()
+                    new_kid = info.get("kid", current_kid).strip()
 
-            if info.get("success"):
-                new_name = info.get("nickname", "").strip()
-                new_kid = info.get("kid", current_kid).strip()
-
-                if new_name and (new_name != current_name or new_kid != current_kid):
-                    await self.db.update_player_name_and_kid(fid, new_name, new_kid)
-                    updated += 1
-                    changes_log.append(f"`{fid}`: `{current_name or 'N/A'}` ➔ **{new_name}** (K{new_kid})")
+                    if new_name and (new_name != current_name or new_kid != current_kid):
+                        await self.db.update_player_name_and_kid(fid, new_name, new_kid)
+                        updated += 1
+                        changes_log.append(f"`{fid}`: `{current_name or 'N/A'}` ➔ **{new_name}** (K{new_kid})")
+                    else:
+                        unchanged += 1
                 else:
-                    unchanged += 1
-            else:
-                failed += 1
+                    failed += 1
 
-            if (idx + 1) % 10 == 0 or idx + 1 == total:
-                percent = int(((idx + 1) / total) * 100)
-                try:
-                    await status_msg.edit(content=f"🔄 Syncing player names... **{idx + 1}/{total}** ({percent}%)")
-                except Exception:
-                    pass
+                if completed % 15 == 0 or completed == total:
+                    percent = int((completed / total) * 100)
+                    try:
+                        await status_msg.edit(content=f"🔄 Syncing player names... **{completed}/{total}** ({percent}%) [⚡ {concurrency_limit} workers]")
+                    except Exception:
+                        pass
 
-            await asyncio.sleep(0.3)
+        tasks = [asyncio.create_task(worker(p)) for p in players]
+        await asyncio.gather(*tasks)
 
         embed = discord.Embed(
-            title="✅ In-Game Player Name Sync Complete",
+            title="⚡ In-Game Player Name Sync Complete",
             colour=discord.Colour.green()
         )
         embed.add_field(name="Total Checked", value=str(total), inline=True)
@@ -543,7 +711,102 @@ class PlayerManager(commands.Cog):
 
         await status_msg.edit(content=None, embed=embed)
 
+    @player_group.command(name="batch-edit", description="Mass update Kingdom ID or Alliance tag for multiple players")
+    @app_commands.describe(
+        new_kingdom="New Kingdom ID to apply",
+        new_alliance="New Alliance tag to apply",
+        target_alliance="Filter: apply to all members of this current alliance",
+        fids="Filter: comma or space separated list of Player IDs (FIDs)"
+    )
+    async def batch_edit_cmd(
+        self,
+        interaction: discord.Interaction,
+        new_kingdom: Optional[str] = None,
+        new_alliance: Optional[str] = None,
+        target_alliance: Optional[str] = None,
+        fids: Optional[str] = None
+    ):
+        if not new_kingdom and not new_alliance:
+            await interaction.response.send_message("❌ Specify at least one change: `new_kingdom` or `new_alliance`.", ephemeral=True)
+            return
+
+        if not target_alliance and not fids:
+            await interaction.response.send_message("❌ Specify a target: `target_alliance` or `fids`.", ephemeral=True)
+            return
+
+        fid_list = [f.strip() for f in fids.replace(',', ' ').split() if f.strip().isdigit()] if fids else None
+
+        await interaction.response.defer(thinking=True)
+        changes = []
+        if new_kingdom:
+            k_count = await self.db.batch_update_kingdom(new_kid=new_kingdom, alliance=target_alliance, fids=fid_list)
+            changes.append(f"• Set Kingdom to **K{new_kingdom}** for **{k_count}** player(s)")
+        if new_alliance:
+            a_count = await self.db.batch_update_alliance(new_alliance=new_alliance, fids=fid_list, current_alliance=target_alliance)
+            changes.append(f"• Set Alliance to **[{new_alliance}]** for **{a_count}** player(s)")
+
+        embed = discord.Embed(
+            title="✅ Batch Player Update Complete",
+            description="\n".join(changes),
+            colour=discord.Colour.green()
+        )
+        await interaction.followup.send(embed=embed)
+
+    @player_group.command(name="batch-delete", description="Mass delete or disable players by alliance or list of FIDs")
+    @app_commands.describe(
+        alliance="Alliance tag to target",
+        fids="Comma or space separated list of Player IDs (FIDs)",
+        action="delete (hard remove) or disable (set status to DISABLED)"
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Disable (Set status to DISABLED)", value="disable"),
+        app_commands.Choice(name="Delete (Permanently remove from DB)", value="delete")
+    ])
+    async def batch_delete_cmd(
+        self,
+        interaction: discord.Interaction,
+        alliance: Optional[str] = None,
+        fids: Optional[str] = None,
+        action: str = "disable"
+    ):
+        if not alliance and not fids:
+            await interaction.response.send_message("❌ Specify at least one target: `alliance` or `fids`.", ephemeral=True)
+            return
+
+        fid_list = [f.strip() for f in fids.replace(',', ' ').split() if f.strip().isdigit()] if fids else None
+        target_desc = f"Alliance `[{alliance}]`" if alliance else f"`{len(fid_list)}` specific FID(s)"
+        if alliance and fid_list:
+            target_desc = f"Alliance `[{alliance}]` and `{len(fid_list)}` FID(s)"
+
+        is_delete = (action == "delete")
+        action_verb = "permanently DELETE" if is_delete else "DISABLE"
+
+        embed = discord.Embed(
+            title=f"⚠️ Confirm Batch {action.capitalize()}",
+            description=f"Are you sure you want to **{action_verb}** players matching {target_desc}?",
+            colour=discord.Colour.red() if is_delete else discord.Colour.orange()
+        )
+
+        async def on_confirm(btn_interaction: discord.Interaction):
+            if is_delete:
+                count = await self.db.batch_delete_players(fids=fid_list, alliance=alliance)
+                res_msg = f"🗑️ Permanently removed **{count}** player(s) from the database."
+            else:
+                count = await self.db.batch_set_status(new_status="DISABLED", fids=fid_list, alliance=alliance)
+                res_msg = f"🔴 Marked **{count}** player(s) as **DISABLED**."
+
+            done_embed = discord.Embed(
+                title=f"✅ Batch {action.capitalize()} Completed",
+                description=res_msg,
+                colour=discord.Colour.green()
+            )
+            await btn_interaction.followup.send(embed=done_embed, ephemeral=True)
+
+        view = ConfirmActionView(interaction.user.id, on_confirm=on_confirm)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     print("PlayerManager cog loaded")
     await bot.add_cog(PlayerManager(bot))
+

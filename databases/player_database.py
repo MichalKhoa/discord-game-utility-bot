@@ -103,6 +103,51 @@ class PlayerDatabase:
         if os.path.exists(txt_path):
             await self.import_legacy_txt(txt_path)
 
+    @staticmethod
+    def parse_raw_player_text(content: str, default_kingdom: str = "278") -> List[Dict[str, Any]]:
+        """
+        Parses raw text containing player IDs, optionally with # Alliance headers,
+        FID KID Name formats, or comma/tab separated lines.
+        """
+        current_alliance = ""
+        players = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith('#'):
+                header = line.lstrip('#').strip()
+                if header:
+                    current_alliance = header
+                continue
+
+            parts = [p.strip() for p in line.replace(',', ' ').replace('\t', ' ').split() if p.strip()]
+            if not parts or not parts[0].isdigit():
+                continue
+
+            fid = parts[0]
+            kid = default_kingdom
+            name = ""
+            alliance = current_alliance
+
+            if len(parts) > 1:
+                if parts[1].isdigit() and int(parts[1]) <= 999999:
+                    kid = parts[1]
+                    name = " ".join(parts[2:]) if len(parts) > 2 else ""
+                else:
+                    name = " ".join(parts[1:])
+
+            players.append({
+                "fid": fid,
+                "kid": kid,
+                "name": name,
+                "alliance": alliance,
+                "status": "ACTIVE",
+                "warning_count": 0,
+                "warning_reason": None
+            })
+        return players
+
     async def import_legacy_txt(self, file_path: str, default_kingdom: str = "278") -> int:
         """Parses legacy playerIDs.txt with # Alliance headers and FID Name lines."""
         if not os.path.exists(file_path):
@@ -118,38 +163,10 @@ class PlayerDatabase:
             except Exception:
                 continue
 
-        current_alliance = ""
-        players_to_insert = []
-
-        for line in content.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith('#'):
-                header = line.lstrip('#').strip()
-                if header:
-                    current_alliance = header
-                continue
-
-            parts = line.split(maxsplit=1)
-            fid = parts[0].strip()
-            if not fid.isdigit():
-                continue
-
-            name = parts[1].strip() if len(parts) > 1 else ""
-            players_to_insert.append({
-                "fid": fid,
-                "kid": default_kingdom,
-                "name": name,
-                "alliance": current_alliance,
-                "status": "ACTIVE",
-                "warning_count": 0,
-                "warning_reason": None
-            })
-
-        if players_to_insert:
-            await self.bulk_upsert_players(players_to_insert)
-        return len(players_to_insert)
+        players = self.parse_raw_player_text(content, default_kingdom=default_kingdom)
+        if players:
+            await self.bulk_upsert_players(players)
+        return len(players)
 
     async def upsert_player(
         self,
@@ -471,4 +488,116 @@ class PlayerDatabase:
             cursor = await db.execute('SELECT * FROM redeemed_codes ORDER BY redeemed_at DESC LIMIT ?', (limit,))
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def batch_update_kingdom(self, new_kid: str, alliance: Optional[str] = None, fids: Optional[List[str]] = None) -> int:
+        """Mass updates Kingdom ID for an alliance or specific list of FIDs."""
+        new_kid = str(new_kid).strip()
+        if not new_kid or not (alliance or fids):
+            return 0
+
+        query = "UPDATE players SET kid = ?, updated_at = CURRENT_TIMESTAMP WHERE "
+        params = [new_kid]
+        conditions = []
+        if alliance:
+            conditions.append("alliance = ?")
+            params.append(alliance.strip())
+        if fids:
+            clean_fids = [str(f).strip() for f in fids if str(f).strip().isdigit()]
+            if clean_fids:
+                placeholders = ",".join("?" for _ in clean_fids)
+                conditions.append(f"fid IN ({placeholders})")
+                params.extend(clean_fids)
+
+        if not conditions:
+            return 0
+        query += " OR ".join(conditions)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(query, params)
+            await db.commit()
+            return cursor.rowcount
+
+    async def batch_update_alliance(self, new_alliance: str, fids: Optional[List[str]] = None, current_alliance: Optional[str] = None) -> int:
+        """Mass updates Alliance tag for specific FIDs or renames an alliance."""
+        new_alliance = str(new_alliance).strip()
+        if not (fids or current_alliance):
+            return 0
+
+        query = "UPDATE players SET alliance = ?, updated_at = CURRENT_TIMESTAMP WHERE "
+        params = [new_alliance]
+        conditions = []
+        if current_alliance:
+            conditions.append("alliance = ?")
+            params.append(current_alliance.strip())
+        if fids:
+            clean_fids = [str(f).strip() for f in fids if str(f).strip().isdigit()]
+            if clean_fids:
+                placeholders = ",".join("?" for _ in clean_fids)
+                conditions.append(f"fid IN ({placeholders})")
+                params.extend(clean_fids)
+
+        if not conditions:
+            return 0
+        query += " OR ".join(conditions)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(query, params)
+            await db.commit()
+            return cursor.rowcount
+
+    async def batch_delete_players(self, fids: Optional[List[str]] = None, alliance: Optional[str] = None) -> int:
+        """Deletes players matching list of FIDs or alliance."""
+        if not fids and not alliance:
+            return 0
+
+        query = "DELETE FROM players WHERE "
+        params = []
+        conditions = []
+        if alliance:
+            conditions.append("alliance = ?")
+            params.append(alliance.strip())
+        if fids:
+            clean_fids = [str(f).strip() for f in fids if str(f).strip().isdigit()]
+            if clean_fids:
+                placeholders = ",".join("?" for _ in clean_fids)
+                conditions.append(f"fid IN ({placeholders})")
+                params.extend(clean_fids)
+
+        if not conditions:
+            return 0
+        query += " OR ".join(conditions)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(query, params)
+            await db.commit()
+            return cursor.rowcount
+
+    async def batch_set_status(self, new_status: str, fids: Optional[List[str]] = None, alliance: Optional[str] = None) -> int:
+        """Bulk updates status (e.g. ACTIVE, FLAGGED, DISABLED) for matching players."""
+        new_status = new_status.strip().upper()
+        if not fids and not alliance:
+            return 0
+
+        query = "UPDATE players SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE "
+        params = [new_status]
+        conditions = []
+        if alliance:
+            conditions.append("alliance = ?")
+            params.append(alliance.strip())
+        if fids:
+            clean_fids = [str(f).strip() for f in fids if str(f).strip().isdigit()]
+            if clean_fids:
+                placeholders = ",".join("?" for _ in clean_fids)
+                conditions.append(f"fid IN ({placeholders})")
+                params.extend(clean_fids)
+
+        if not conditions:
+            return 0
+        query += " OR ".join(conditions)
+
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(query, params)
+            await db.commit()
+            return cursor.rowcount
+
 

@@ -392,6 +392,79 @@ class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(player["status"], "ACTIVE")
             self.assertEqual(player["warning_count"], 0)
 
+    def test_parse_raw_player_text(self):
+        sample_text = """
+        # Alliance Alpha
+        10001 278 PlayerOne
+        10002 305 PlayerTwo
+        # Alliance Beta
+        10003 PlayerThree
+        10004,278,PlayerFour
+        #
+        10005
+        invalid_line
+        """
+        players = PlayerDatabase.parse_raw_player_text(sample_text, default_kingdom="278")
+        self.assertEqual(len(players), 5)
+        self.assertEqual(players[0]["fid"], "10001")
+        self.assertEqual(players[0]["kid"], "278")
+        self.assertEqual(players[0]["name"], "PlayerOne")
+        self.assertEqual(players[0]["alliance"], "Alliance Alpha")
+
+        self.assertEqual(players[1]["fid"], "10002")
+        self.assertEqual(players[1]["kid"], "305")
+        self.assertEqual(players[1]["alliance"], "Alliance Alpha")
+
+        self.assertEqual(players[2]["fid"], "10003")
+        self.assertEqual(players[2]["kid"], "278")
+        self.assertEqual(players[2]["name"], "PlayerThree")
+        self.assertEqual(players[2]["alliance"], "Alliance Beta")
+
+        self.assertEqual(players[3]["fid"], "10004")
+        self.assertEqual(players[3]["kid"], "278")
+
+        self.assertEqual(players[4]["fid"], "10005")
+        self.assertEqual(players[4]["kid"], "278")
+
+    async def test_batch_operations(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_batch.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            # Insert sample players
+            players = [
+                {"fid": "2001", "kid": "278", "name": "P1", "alliance": "NOR"},
+                {"fid": "2002", "kid": "278", "name": "P2", "alliance": "NOR"},
+                {"fid": "2003", "kid": "278", "name": "P3", "alliance": "OvO"},
+                {"fid": "2004", "kid": "300", "name": "P4", "alliance": "RKF"},
+            ]
+            await db.bulk_upsert_players(players)
+
+            # Test batch_update_kingdom by alliance
+            k_count = await db.batch_update_kingdom(new_kid="999", alliance="NOR")
+            self.assertEqual(k_count, 2)
+            p1 = await db.get_player("2001")
+            self.assertEqual(p1["kid"], "999")
+
+            # Test batch_update_alliance by FIDs
+            a_count = await db.batch_update_alliance(new_alliance="LEGEND", fids=["2003", "2004"])
+            self.assertEqual(a_count, 2)
+            p3 = await db.get_player("2003")
+            self.assertEqual(p3["alliance"], "LEGEND")
+
+            # Test batch_set_status
+            s_count = await db.batch_set_status(new_status="DISABLED", alliance="NOR")
+            self.assertEqual(s_count, 2)
+            p2 = await db.get_player("2002")
+            self.assertEqual(p2["status"], "DISABLED")
+
+            # Test batch_delete_players by FID
+            d_count = await db.batch_delete_players(fids=["2001"])
+            self.assertEqual(d_count, 1)
+            self.assertIsNone(await db.get_player("2001"))
+
+
 
 
 class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
