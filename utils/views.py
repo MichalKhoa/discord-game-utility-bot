@@ -1,4 +1,5 @@
 import discord
+import asyncio
 from discord.ext import commands, tasks
 
 from utils.embeds import MainMenuEmbed
@@ -117,11 +118,54 @@ class PlayerMenuButtons(discord.ui.View):
     async def add_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PlayerAddModal(self.db))
 
-    @discord.ui.button(label="Batch Import", style=discord.ButtonStyle.success, emoji="📝", row=0)
+    @discord.ui.button(label="Batch Paste", style=discord.ButtonStyle.success, emoji="📝", row=0)
     async def batch_import_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(PlayerBatchAddModal(self.db))
 
-    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.primary, emoji="🔍", row=0)
+    @discord.ui.button(label="Import File", style=discord.ButtonStyle.success, emoji="📁", row=0)
+    async def import_file_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "📁 **Ready for file upload!**\nPlease attach and send your `.csv` or `.txt` file in this channel within 60 seconds (or use `/player import`).",
+            ephemeral=True
+        )
+
+        def check(m: discord.Message):
+            return m.author.id == interaction.user.id and m.channel.id == interaction.channel_id and len(m.attachments) > 0
+
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+        except asyncio.TimeoutError:
+            return
+
+        file = msg.attachments[0]
+        if not (file.filename.endswith(".csv") or file.filename.endswith(".txt")):
+            await interaction.followup.send("❌ Uploaded file must be a `.csv` or `.txt` file.", ephemeral=True)
+            return
+
+        try:
+            content_bytes = await file.read()
+            content = content_bytes.decode("utf-8", errors="replace")
+            players = self.db.parse_raw_player_text(content, default_kingdom="278")
+            if not players:
+                await interaction.followup.send("❌ No valid player IDs found in the file.", ephemeral=True)
+                return
+
+            imported_count = await self.db.bulk_upsert_players(players)
+            alliances = {p.get("alliance") for p in players if p.get("alliance")}
+            alliance_summary = f" across **{len(alliances)}** alliance(s)" if alliances else ""
+
+            embed = discord.Embed(
+                title="✅ File Import Complete",
+                description=f"Successfully imported/updated **{imported_count}** player ID(s){alliance_summary} from `{file.filename}`.",
+                colour=discord.Colour.green()
+            )
+            if alliances:
+                embed.add_field(name="Alliances Included", value=", ".join(f"`{a}`" for a in sorted(alliances)[:10]), inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error processing file: `{e}`", ephemeral=True)
+
+    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.primary, emoji="🔍", row=1)
     async def search_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         pm_cog = self.bot.get_cog("PlayerManager")
         if pm_cog:
