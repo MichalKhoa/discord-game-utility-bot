@@ -142,6 +142,41 @@ class CodeRedeem(commands.Cog):
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
 
+    async def send_with_webhook_fallback(
+        self,
+        channel: discord.abc.Messageable,
+        content: Optional[str] = None,
+        embed: Optional[discord.Embed] = None,
+        bot_name: str = "GiftCodeRedeemBot"
+    ):
+        """Attempts sending via channel webhook for custom bot identity; gracefully falls back to channel.send()."""
+        if hasattr(channel, "create_webhook") and not isinstance(channel, (discord.DMChannel, discord.GroupChannel)):
+            try:
+                webhook = None
+                if isinstance(channel, discord.Thread):
+                    parent = channel.parent or await self.bot.fetch_channel(channel.parent_id)
+                    webhook = await parent.create_webhook(name=bot_name)
+                    webhook_url = f"{webhook.url}?thread_id={channel.id}"
+                else:
+                    webhook = await channel.create_webhook(name=bot_name)
+                    webhook_url = webhook.url
+
+                async with aiohttp.ClientSession() as session:
+                    wh = discord.Webhook.from_url(webhook_url, session=session)
+                    await wh.send(content=content, embed=embed)
+
+                if webhook:
+                    try:
+                        await webhook.delete()
+                    except Exception:
+                        pass
+                return
+            except Exception as wh_err:
+                print(f"DEBUG: Webhook delivery failed ({wh_err}), falling back to direct channel message.")
+
+        # Fallback to direct channel send
+        await channel.send(content=content, embed=embed)
+
     async def run_redeem(self, channel: discord.abc.Messageable, gift_codes: List[str], user_id: int):
         print(f"DEBUG: Starting run_redeem for {gift_codes}")
         async with self.redeem_lock:
@@ -226,9 +261,12 @@ class CodeRedeem(commands.Cog):
                 if progress_msg:
                     await progress_msg.edit(embed=final_embed)
                 else:
-                    await channel.send(embed=final_embed)
+                    await self.send_with_webhook_fallback(channel, embed=final_embed)
 
-                await channel.send(f"<@{user_id}> ✅ Finished redeeming gift code(s): `{', '.join(gift_codes)}`!")
+                await self.send_with_webhook_fallback(
+                    channel,
+                    content=f"<@{user_id}> ✅ Finished redeeming gift code(s): `{', '.join(gift_codes)}`!"
+                )
 
             except Exception as e:
                 print(f"DEBUG: Exception in run_redeem: {e}")
@@ -242,7 +280,7 @@ class CodeRedeem(commands.Cog):
                 if progress_msg:
                     await progress_msg.edit(embed=err_embed)
                 else:
-                    await channel.send(embed=err_embed)
+                    await self.send_with_webhook_fallback(channel, embed=err_embed)
 
     async def _execute_batch_redemption(self, interaction: discord.Interaction, codes: List[str]):
         """Dispatches background redemption task after confirmation."""
