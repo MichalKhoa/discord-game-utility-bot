@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
+from typing import Optional, List
 
 import utils.redeem_code
 
@@ -18,27 +18,50 @@ LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "players.db")
 LEGACY_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
 
 
+class ConfirmRedeemView(discord.ui.View):
+    def __init__(self, author_id: int, on_confirm, on_cancel=None):
+        super().__init__(timeout=90)
+        self.author_id = author_id
+        self.on_confirm = on_confirm
+        self.on_cancel = on_cancel
+        self.value = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Proceed Anyway", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = True
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = False
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Redemption cancelled.", embed=None, view=self)
+        if self.on_cancel:
+            await self.on_cancel(interaction)
+
+
 class CodeRedeem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = PlayerDatabase()
         self.redeem_lock = asyncio.Lock()
-        self.log_file = os.path.join(PROJECT_ROOT, "data", "redeemed_codes.txt")
         self.running_tasks = set()
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
 
-    def is_code_redeemed(self, code: str) -> bool:
-        """Checks if the code exists in the local log file."""
-        if not os.path.exists(self.log_file):
-            return False
-        with open(self.log_file, "r", encoding="utf-8") as f:
-            redeemed_list = [line.strip().upper() for line in f.readlines()]
-            return code.strip().upper() in redeemed_list
-
-    def log_success(self, code: str):
-        """Adds a successfully redeemed code to the log file."""
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(f"{code.strip().upper()}\n")
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.db.init_db()
 
     @app_commands.command(name="redeem-for-all", description="Redeem codes (separated by ;) for in-game rewards!")
     @app_commands.describe(gift_code="The code(s) you want to redeem, separated by ;")
@@ -54,12 +77,28 @@ class CodeRedeem(commands.Cog):
     async def redeem_single(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
         await self.redeem_code_for_player(interaction, gift_code, player_id, kingdom_id)
 
+    @app_commands.command(name="redeem-history", description="Check recently redeemed gift codes and timestamps")
+    async def redeem_history(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        codes = await self.db.get_redeemed_codes(limit=25)
+        if not codes:
+            await interaction.followup.send("ℹ️ No redeemed codes logged in the database yet.")
+            return
+
+        embed = discord.Embed(title="📜 Redeemed Codes History", colour=discord.Colour.gold())
+        lines = []
+        for c in codes:
+            code_str = c.get("code")
+            date_str = str(c.get("redeemed_at", "")).split('.')[0]
+            lines.append(f"• `{code_str}` — *Redeemed on {date_str}*")
+        embed.description = "\n".join(lines)
+        await interaction.followup.send(embed=embed)
+
     async def run_redeem(self, webhook_url, gift_codes, user_id):
         print(f"DEBUG: Starting run_redeem for {gift_codes}")
         async with self.redeem_lock:
             print("DEBUG: Acquired lock")
             try:
-                # Ensure DB is initialized
                 await self.db.init_db()
 
                 results = []
@@ -70,7 +109,7 @@ class CodeRedeem(commands.Cog):
                     results.append(stats)
 
                     if stats.startswith("✅") or stats.startswith("Giftcode"):
-                        self.log_success(code)
+                        await self.db.log_redeemed_code(code, redeemed_by=user_id)
 
                 combined_stats = "\n\n".join(results)
                 async with aiohttp.ClientSession() as session:
@@ -89,6 +128,41 @@ class CodeRedeem(commands.Cog):
                 except Exception as e:
                     print(f"DEBUG: Error deleting webhook: {e}")
 
+    async def _execute_batch_redemption(self, interaction: discord.Interaction, codes: List[str]):
+        """Dispatches background redemption task after confirmation."""
+        if self.redeem_lock.locked():
+            await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
+            return
+
+        await interaction.followup.send(
+            f"🔢 Redeeming code(s) `{', '.join(codes)}` for everyone.\n"
+            f"Process might take longer to finish. I will ping you when done."
+        )
+
+        try:
+            channel = interaction.channel
+            if channel is None:
+                channel = await self.bot.fetch_channel(interaction.channel_id)
+
+            if isinstance(channel, discord.Thread):
+                parent_channel = channel.parent
+                if parent_channel is None:
+                    parent_channel = await self.bot.fetch_channel(channel.parent_id)
+                webhook = await parent_channel.create_webhook(name="GiftCodeRedeemBot")
+                webhook_url = f"{webhook.url}?thread_id={channel.id}"
+            elif isinstance(channel, discord.DMChannel):
+                raise ValueError("Cannot run redeem-for-all in Direct Messages. Please run in a server channel.")
+            else:
+                webhook = await channel.create_webhook(name="GiftCodeRedeemBot")
+                webhook_url = webhook.url
+
+            task = asyncio.create_task(self.run_redeem(webhook_url, codes, interaction.user.id))
+            self.running_tasks.add(task)
+            task.add_done_callback(self.running_tasks.discard)
+        except Exception as e:
+            print(f"DEBUG: Error starting task: {e}")
+            await interaction.followup.send(f"⚠️ Failed to start redemption process: {e}")
+
     async def redeem_code_for_all(self, interaction: discord.Interaction, gift_code: str):
         print(f"DEBUG: redeem_code_for_all called with {gift_code}")
         try:
@@ -99,63 +173,80 @@ class CodeRedeem(commands.Cog):
 
             await interaction.response.defer(thinking=True)
 
-            if self.redeem_lock.locked():
-                await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
-                return
-
-            valid_codes = []
+            # Check database for previously redeemed codes
             already_redeemed = []
             for code in codes:
-                if self.is_code_redeemed(code):
-                    already_redeemed.append(code)
-                else:
-                    valid_codes.append(code)
+                info = await self.db.is_code_redeemed(code)
+                if info:
+                    already_redeemed.append((code, info.get("redeemed_at", "earlier date")))
 
             if already_redeemed:
-                await interaction.followup.send(
-                    f"⚠️ The following codes have already been redeemed and will be skipped: {', '.join(already_redeemed)}",
-                    ephemeral=True
+                embed = discord.Embed(
+                    title="⚠️ Code(s) Already Redeemed Previously",
+                    description=(
+                        "The following gift code(s) have already been redeemed in the past:\n\n"
+                        + "\n".join(f"• **`{c}`** (Redeemed: `{str(d).split('.')[0]}`)" for c, d in already_redeemed)
+                        + "\n\n**Do you really want to proceed and redeem again?**"
+                    ),
+                    colour=discord.Colour.yellow()
                 )
 
-            if not valid_codes:
-                await interaction.followup.send("⚠️ All provided codes have already been redeemed!", ephemeral=True)
+                async def on_confirm(btn_interaction: discord.Interaction):
+                    await self._execute_batch_redemption(interaction, codes)
+
+                view = ConfirmRedeemView(interaction.user.id, on_confirm=on_confirm)
+                await interaction.followup.send(embed=embed, view=view)
                 return
 
-            await interaction.followup.send(f"🔢 Redeeming code(s) `{', '.join(valid_codes)}` for everyone. "
-                                            f"Process might take longer to finish. I will ping you when done.")
+            await self._execute_batch_redemption(interaction, codes)
 
-            try:
-                channel = interaction.channel
-                if channel is None:
-                    channel = await self.bot.fetch_channel(interaction.channel_id)
-
-                if isinstance(channel, discord.Thread):
-                    parent_channel = channel.parent
-                    if parent_channel is None:
-                        parent_channel = await self.bot.fetch_channel(channel.parent_id)
-                    webhook = await parent_channel.create_webhook(name="GiftCodeRedeemBot")
-                    webhook_url = f"{webhook.url}?thread_id={channel.id}"
-                elif isinstance(channel, discord.DMChannel):
-                    raise ValueError("Cannot run redeem-for-all in Direct Messages. Please run in a server channel.")
-                else:
-                    webhook = await channel.create_webhook(name="GiftCodeRedeemBot")
-                    webhook_url = webhook.url
-
-                print(f"DEBUG: Created webhook {webhook_url}")
-
-                task = asyncio.create_task(self.run_redeem(webhook_url, valid_codes, interaction.user.id))
-                self.running_tasks.add(task)
-                task.add_done_callback(self.running_tasks.discard)
-                print("DEBUG: Task created")
-            except Exception as e:
-                print(f"DEBUG: Error starting task: {e}")
-                import traceback
-                traceback.print_exc()
-                await interaction.followup.send(f"⚠️ Failed to start redemption process: {e}")
         except Exception as e:
             print(f"DEBUG: Exception in redeem_code_for_all: {e}")
             import traceback
             traceback.print_exc()
+
+    async def _execute_single_redemption(self, interaction: discord.Interaction, codes: List[str], player_id: str, kingdom_id: Optional[str] = None):
+        target_kid = kingdom_id
+        player_info = await self.db.get_player(player_id)
+        if not target_kid:
+            if player_info and player_info.get("kid"):
+                target_kid = player_info["kid"]
+            else:
+                target_kid = "278"
+
+        player_name = player_info.get("name") if player_info else ""
+        display_name = f" ({player_name})" if player_name else ""
+
+        results = []
+        for code in codes:
+            redeem_result = await asyncio.to_thread(
+                utils.redeem_code.send_signed_post,
+                "gift_code",
+                {"fid": player_id, "cdk": code, "kid": target_kid}
+            )
+
+            msg = redeem_result.get('msg', '').replace('.', '')
+            if msg == "TIMEOUT RETRY":
+                retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, target_kid)
+                if retry_result:
+                    redeem_result = retry_result
+                    msg = retry_result.get('msg', '').replace('.', '')
+                else:
+                    msg = "Failed"
+
+            if "error" in redeem_result:
+                result_message = f"Error: {redeem_result['error']}"
+            else:
+                result_message = utils.redeem_code.RESULT_MESSAGES.get(msg, msg or "Failed")
+                if msg in ("SUCCESS", "SAME TYPE EXCHANGE", "RECEIVED"):
+                    await self.db.log_redeemed_code(code, redeemed_by=interaction.user.id)
+
+            results.append(f"🎁 **Code**: `{code}` 📊 **Result**: {result_message}")
+
+        combined_results = "\n".join(results)
+        await interaction.followup.send(
+            f"👤 **Player ID**: `{player_id}`{display_name} (Kingdom {target_kid})\n" + combined_results
+        )
 
     async def redeem_code_for_player(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
         print(f"DEBUG: redeem_code_for_player called with {gift_code} for {player_id}")
@@ -168,47 +259,32 @@ class CodeRedeem(commands.Cog):
         await interaction.response.defer(thinking=True)
 
         try:
-            # Resolve kingdom ID
-            target_kid = kingdom_id
-            player_info = await self.db.get_player(player_id)
-            if not target_kid:
-                if player_info and player_info.get("kid"):
-                    target_kid = player_info["kid"]
-                else:
-                    target_kid = "278"
-
-            player_name = player_info.get("name") if player_info else ""
-            display_name = f" ({player_name})" if player_name else ""
-
-            results = []
+            already_redeemed = []
             for code in codes:
-                redeem_result = await asyncio.to_thread(
-                    utils.redeem_code.send_signed_post,
-                    "gift_code",
-                    {"fid": player_id, "cdk": code, "kid": target_kid}
+                info = await self.db.is_code_redeemed(code)
+                if info:
+                    already_redeemed.append((code, info.get("redeemed_at", "earlier date")))
+
+            if already_redeemed:
+                embed = discord.Embed(
+                    title="⚠️ Code(s) Already Redeemed Previously",
+                    description=(
+                        "The following gift code(s) have already been redeemed in the past:\n\n"
+                        + "\n".join(f"• **`{c}`** (Redeemed: `{str(d).split('.')[0]}`)" for c, d in already_redeemed)
+                        + "\n\n**Do you really want to proceed for this player?**"
+                    ),
+                    colour=discord.Colour.yellow()
                 )
 
-                msg = redeem_result.get('msg', '').replace('.', '')
-                if msg == "TIMEOUT RETRY":
-                    print(f"Retrying single player for code {code}...")
-                    retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, target_kid)
-                    if retry_result:
-                        redeem_result = retry_result
-                        msg = retry_result.get('msg', '').replace('.', '')
-                    else:
-                        msg = "Failed"
+                async def on_confirm(btn_interaction: discord.Interaction):
+                    await self._execute_single_redemption(interaction, codes, player_id, kingdom_id)
 
-                if "error" in redeem_result:
-                    result_message = f"Error: {redeem_result['error']}"
-                else:
-                    result_message = utils.redeem_code.RESULT_MESSAGES.get(msg, msg or "Failed")
+                view = ConfirmRedeemView(interaction.user.id, on_confirm=on_confirm)
+                await interaction.followup.send(embed=embed, view=view)
+                return
 
-                results.append(f"🎁 **Code**: `{code}` 📊 **Result**: {result_message}")
+            await self._execute_single_redemption(interaction, codes, player_id, kingdom_id)
 
-            combined_results = "\n".join(results)
-            await interaction.followup.send(
-                f"👤 **Player ID**: `{player_id}`{display_name} (Kingdom {target_kid})\n" + combined_results
-            )
         except Exception as e:
             print(f"DEBUG: Error in redeem_code_for_player: {e}")
             await interaction.followup.send(f"⚠️ Failed to redeem: {e}")

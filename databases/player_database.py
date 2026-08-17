@@ -34,10 +34,21 @@ class PlayerDatabase:
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_status ON players(status)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_kid ON players(kid)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_alliance ON players(alliance)')
+
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS redeemed_codes (
+                    code TEXT PRIMARY KEY,
+                    redeemed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    redeemed_by INTEGER,
+                    success_count INTEGER DEFAULT 0,
+                    total_attempted INTEGER DEFAULT 0
+                )
+            ''')
             await db.commit()
 
-        # Check if table is empty, if so attempt migration from playerIDs.txt
+        # Check if tables are empty, if so attempt migrations
         await self._auto_migrate_if_empty()
+        await self._auto_migrate_redeemed_codes()
 
     async def _auto_migrate_if_empty(self):
         """Migrates from playerIDs.txt if the database table has 0 rows."""
@@ -347,3 +358,60 @@ class PlayerDatabase:
                 p.get("warning_reason") or ""
             ])
         return output.getvalue()
+
+    async def _auto_migrate_redeemed_codes(self):
+        """Migrates legacy redeemed_codes.txt into redeemed_codes table if empty."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute('SELECT COUNT(*) FROM redeemed_codes')
+            row = await cursor.fetchone()
+            if row and row[0] > 0:
+                return
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for file_name in ['redeemed_codes.txt', os.path.join('data', 'redeemed_codes.txt')]:
+            txt_path = os.path.join(base_dir, file_name) if not file_name.startswith(base_dir) else file_name
+            if os.path.exists(txt_path):
+                try:
+                    with open(txt_path, 'r', encoding='utf-8') as f:
+                        codes = [line.strip().upper() for line in f if line.strip() and not line.strip().startswith('#')]
+                    async with aiosqlite.connect(self.db_path) as db:
+                        for code in codes:
+                            await db.execute('INSERT OR IGNORE INTO redeemed_codes (code) VALUES (?)', (code,))
+                        await db.commit()
+                    break
+                except Exception as e:
+                    print(f"Error migrating redeemed codes from {txt_path}: {e}")
+
+    async def is_code_redeemed(self, code: str) -> Optional[Dict[str, Any]]:
+        """Checks if a gift code exists in the database. Returns dict or None."""
+        code = str(code).strip().upper()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute('SELECT * FROM redeemed_codes WHERE UPPER(code) = ?', (code,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def log_redeemed_code(self, code: str, redeemed_by: Optional[int] = None, success_count: int = 0, total_attempted: int = 0) -> bool:
+        """Logs or updates a successfully redeemed code."""
+        code = str(code).strip().upper()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                INSERT INTO redeemed_codes (code, redeemed_at, redeemed_by, success_count, total_attempted)
+                VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    redeemed_at = CURRENT_TIMESTAMP,
+                    redeemed_by = COALESCE(excluded.redeemed_by, redeemed_codes.redeemed_by),
+                    success_count = excluded.success_count,
+                    total_attempted = excluded.total_attempted
+            ''', (code, redeemed_by, success_count, total_attempted))
+            await db.commit()
+            return True
+
+    async def get_redeemed_codes(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Returns list of recently redeemed codes."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute('SELECT * FROM redeemed_codes ORDER BY redeemed_at DESC LIMIT ?', (limit,))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
