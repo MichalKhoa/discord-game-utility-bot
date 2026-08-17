@@ -9,6 +9,13 @@ import time
 from time import perf_counter, process_time
 from typing import Tuple, List, Optional, Dict, Any
 import requests
+try:
+    from curl_cffi import requests as cffi_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    cffi_requests = None
+    CURL_CFFI_AVAILABLE = False
+
 
 
 
@@ -89,6 +96,51 @@ PLATFORMS = [
 SESSION = requests.Session()
 
 
+def load_proxies(file_path: str = "data/proxies.txt") -> List[str]:
+    """Loads list of proxies from PROXY_LIST env var or text file."""
+    env_proxies = os.environ.get("PROXY_LIST", "").strip()
+    if env_proxies:
+        return [p.strip() for p in env_proxies.split(",") if p.strip()]
+
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        except Exception:
+            pass
+    return []
+
+
+class ProxyPool:
+    """Manages rotating proxy pool with bound headers and health cooldowns."""
+    def __init__(self, proxies: List[str]):
+        self.proxies = proxies
+        self.index = 0
+        self.cooldowns: Dict[str, float] = {}
+        # Bind a consistent browser header profile per proxy IP
+        self.headers_map: Dict[str, Dict[str, str]] = {
+            p: get_headers() for p in proxies
+        }
+
+    def get_proxy_and_headers(self) -> Tuple[Optional[str], Dict[str, str]]:
+        if not self.proxies:
+            return None, get_headers()
+
+        now = time.time()
+        for _ in range(len(self.proxies)):
+            proxy = self.proxies[self.index % len(self.proxies)]
+            self.index += 1
+            if self.cooldowns.get(proxy, 0) <= now:
+                return proxy, self.headers_map[proxy]
+
+        proxy = self.proxies[0]
+        return proxy, self.headers_map[proxy]
+
+    def mark_cooldown(self, proxy: str, duration: float = 60.0):
+        if proxy:
+            self.cooldowns[proxy] = time.time() + duration
+
+
 def get_headers():
     """Randomized browser-like headers with proper user-agent alignment and strict browser header ordering."""
     browser, versions = random.choice(BROWSER_PROFILES)
@@ -130,13 +182,33 @@ def encode_data(data):
     return {"sign": hashlib.md5(f"{encoded}{KS_ENCRYPT_KEY}".encode()).hexdigest(), **data}
 
 
-def make_request(url, payload, headers=None):
-    """POST with transport-level retries; returns response or None."""
+def make_request(url, payload, headers=None, proxy=None):
+    """POST with transport-level retries & optional proxy/TLS impersonation; returns response or None."""
     if headers is None:
         headers = get_headers()
+
+    proxies_dict = {"http": proxy, "https": proxy} if proxy else None
+
     for attempt in range(MAX_RETRIES):
         try:
-            response = SESSION.post(url, data=payload, headers=headers, timeout=(10, 30))
+            if CURL_CFFI_AVAILABLE and cffi_requests:
+                response = cffi_requests.post(
+                    url,
+                    data=payload,
+                    headers=headers,
+                    proxies=proxies_dict,
+                    impersonate="chrome124",
+                    timeout=30
+                )
+            else:
+                response = SESSION.post(
+                    url,
+                    data=payload,
+                    headers=headers,
+                    proxies=proxies_dict,
+                    timeout=(10, 30)
+                )
+
             if response.status_code == 200:
                 return response
             if response.status_code == 429:
@@ -145,7 +217,7 @@ def make_request(url, payload, headers=None):
             if response.status_code in (502, 503, 504):
                 time.sleep(RETRY_DELAY * (attempt + 1) * 1.5)
                 continue
-        except requests.exceptions.RequestException:
+        except Exception:
             pass
 
         if attempt < MAX_RETRIES - 1:
@@ -194,7 +266,7 @@ def classify(data):
     return msg
 
 
-def send_signed_post(endpoint, data):
+def send_signed_post(endpoint, data, headers=None, proxy=None):
     """Prepares, signs, and sends a POST request to the Kingshot API."""
     data_copy = {k: str(v) for k, v in data.items()}
     if "time" not in data_copy:
@@ -204,7 +276,7 @@ def send_signed_post(endpoint, data):
 
     payload = encode_data(data_copy)
     url = endpoint if endpoint.startswith("http") else f"{BASE_URL}/api/{endpoint}"
-    response = make_request(url, payload)
+    response = make_request(url, payload, headers=headers, proxy=proxy)
     if response is None:
         return {"error": TRANSPORT_FAILURE}
     try:
@@ -213,7 +285,7 @@ def send_signed_post(endpoint, data):
         return {"error": "Invalid JSON response"}
 
 
-def redeem_once(fid, kid, cdk):
+def redeem_once(fid, kid, cdk, headers=None, proxy=None):
     """One signed redemption POST for `fid` in kingdom `kid`; returns status key."""
     payload = encode_data({
         "fid": str(fid),
@@ -221,7 +293,7 @@ def redeem_once(fid, kid, cdk):
         "kid": str(kid) if kid else DEFAULT_KINGDOM,
         "time": str(int(time.time())),
     })
-    response = make_request(REDEEM_URL, payload)
+    response = make_request(REDEEM_URL, payload, headers=headers, proxy=proxy)
     if response is None:
         return TRANSPORT_FAILURE
 
@@ -231,12 +303,12 @@ def redeem_once(fid, kid, cdk):
         return "Redemption response invalid JSON"
 
 
-def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM):
+def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM, headers=None, proxy=None):
     """Redeem code for a single player ID with retries."""
     for attempt in range(MAX_FID_ATTEMPTS):
         if attempt > 0:
             time.sleep(RETRY_DELAY * attempt)
-        res = send_signed_post("gift_code", {"fid": playerId, "cdk": giftCode, "kid": kingdomId or DEFAULT_KINGDOM})
+        res = send_signed_post("gift_code", {"fid": playerId, "cdk": giftCode, "kid": kingdomId or DEFAULT_KINGDOM}, headers=headers, proxy=proxy)
         if "error" not in res:
             status = classify(res)
             if status not in ("TIMEOUT RETRY", "TOO FREQUENT"):
@@ -244,7 +316,7 @@ def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM):
     return res
 
 
-def fetch_player_info(fid: str, kid: str = DEFAULT_KINGDOM) -> Dict[str, Any]:
+def fetch_player_info(fid: str, kid: str = DEFAULT_KINGDOM, headers=None, proxy=None) -> Dict[str, Any]:
     """
     Fetches real-time player info (nickname, stove level, kingdom) from Century Games API.
     Returns a dict with 'success' (bool), 'nickname' (str), 'kid' (str), 'stove_lv' (int), and 'error' (str).
@@ -252,7 +324,7 @@ def fetch_player_info(fid: str, kid: str = DEFAULT_KINGDOM) -> Dict[str, Any]:
     res = send_signed_post("player", {
         "fid": str(fid).strip(),
         "kid": str(kid).strip() if kid else DEFAULT_KINGDOM
-    })
+    }, headers=headers, proxy=proxy)
     if "error" in res:
         return {"success": False, "nickname": "", "kid": str(kid), "stove_lv": 0, "fid": str(fid), "error": res["error"]}
 
@@ -280,13 +352,13 @@ def fetch_player_info(fid: str, kid: str = DEFAULT_KINGDOM) -> Dict[str, Any]:
     }
 
 
-def verify_player(fid: str, kid: str = DEFAULT_KINGDOM) -> Tuple[bool, str]:
+def verify_player(fid: str, kid: str = DEFAULT_KINGDOM, headers=None, proxy=None) -> Tuple[bool, str]:
     """
     Validates player FID and Kingdom ID using Century Games API.
     Returns (is_valid: bool, message: str).
     """
     # First attempt player info lookup
-    info = fetch_player_info(fid, kid)
+    info = fetch_player_info(fid, kid, headers=headers, proxy=proxy)
     if info["success"]:
         return True, f"Verified: {info['nickname']} (K{info['kid']})"
 
@@ -295,7 +367,7 @@ def verify_player(fid: str, kid: str = DEFAULT_KINGDOM) -> Tuple[bool, str]:
         "fid": str(fid).strip(),
         "kid": str(kid).strip() if kid else DEFAULT_KINGDOM,
         "cdk": "VERIFY_PING"
-    })
+    }, headers=headers, proxy=proxy)
     if "error" in res:
         return False, f"API Connection Error: {res['error']}"
 
@@ -450,6 +522,11 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
 
     db_path = file_path if file_path.endswith(".db") else "data/players.db"
 
+    # Setup proxy pool & session-consistent browser headers
+    loaded_proxies = load_proxies()
+    proxy_pool = ProxyPool(loaded_proxies) if loaded_proxies else None
+    batch_headers = get_headers()  # Consistent single UA for direct connection
+
     counters = {
         "success": 0,
         "already_redeemed": 0,
@@ -471,6 +548,7 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
     stop_processing = False
     consecutive_failures = 0
     fatal_reason = None
+    next_burst_target = random.randint(15, 25)
 
     while len(processed_fids) < len(players) and not stop_processing:
         now = time.time()
@@ -488,17 +566,24 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
             continue
 
         for fid, kid in ready:
-            SESSION.cookies.clear()
-            SESSION.headers.clear()
-            SESSION.headers.update(get_headers())
+            # Pick proxy & consistent header for this request
+            if proxy_pool:
+                current_proxy, current_headers = proxy_pool.get_proxy_and_headers()
+            else:
+                current_proxy, current_headers = None, batch_headers
+
             status = "Processing error"
             for attempt in range(MAX_FID_ATTEMPTS):
-                status = redeem_once(fid, kid, giftCode)
+                status = redeem_once(fid, kid, giftCode, headers=current_headers, proxy=current_proxy)
                 counters["requests"] += 1
 
                 if status == "TOO FREQUENT":
                     counters["rate_limited"] += 1
                     cooldowns[fid] = cooldowns.get(fid, 0) + 1
+                    if current_proxy and proxy_pool:
+                        proxy_pool.mark_cooldown(current_proxy, duration=60.0)
+                    # Global IP backoff pause to prevent bans
+                    time.sleep(15)
                     if cooldowns[fid] <= MAX_COOLDOWNS:
                         retry_queue[fid] = time.time() + TOO_FREQUENT_SLEEP
                         break
@@ -540,6 +625,12 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
                 fatal_reason = f"{MAX_CONSECUTIVE_FAILURES} consecutive API connection failures"
                 stop_processing = True
                 break
+
+            # Micro-break / burst pause every 15-25 players
+            if len(processed_fids) >= next_burst_target:
+                micro_break = random.uniform(5.0, 12.0)
+                time.sleep(micro_break)
+                next_burst_target += random.randint(15, 25)
 
             human_delay = max(0.5, random.gauss(DELAY + 0.2, 0.3))
             time.sleep(human_delay)

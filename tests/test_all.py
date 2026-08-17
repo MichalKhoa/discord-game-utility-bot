@@ -21,6 +21,8 @@ from utils.redeem_code import (
     verify_player,
     flag_player_sync,
     unflag_player_sync,
+    load_proxies,
+    ProxyPool,
     KS_ENCRYPT_KEY
 )
 from utils.code_detector import (
@@ -158,7 +160,7 @@ class TestRedeemUtils(unittest.TestCase):
         self.assertIn("KingHero", msg)
 
     def test_flag_and_unflag_sync(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             db_path = os.path.join(tmpdir, "test_sync.db")
             # Create table
             import sqlite3
@@ -195,6 +197,28 @@ class TestRedeemUtils(unittest.TestCase):
                 self.assertEqual(row[0], "ACTIVE")
                 self.assertEqual(row[1], 0)
                 self.assertIsNone(row[2])
+
+    def test_proxy_pool_rotation(self):
+        proxies = ["http://1.1.1.1:8080", "http://2.2.2.2:8080"]
+        pool = ProxyPool(proxies)
+        
+        p1, h1 = pool.get_proxy_and_headers()
+        p2, h2 = pool.get_proxy_and_headers()
+        p3, h3 = pool.get_proxy_and_headers()
+
+        self.assertEqual(p1, "http://1.1.1.1:8080")
+        self.assertEqual(p2, "http://2.2.2.2:8080")
+        self.assertEqual(p3, "http://1.1.1.1:8080")
+        # Ensure header bound to proxy is consistent
+        self.assertEqual(h1, pool.headers_map["http://1.1.1.1:8080"])
+        self.assertEqual(h3, pool.headers_map["http://1.1.1.1:8080"])
+
+    def test_load_proxies_env(self):
+        with patch.dict(os.environ, {"PROXY_LIST": "http://proxy1:8080, http://proxy2:8080"}):
+            loaded = load_proxies()
+            self.assertEqual(len(loaded), 2)
+            self.assertEqual(loaded[0], "http://proxy1:8080")
+            self.assertEqual(loaded[1], "http://proxy2:8080")
 
 
 class TestCodeDetector(unittest.TestCase):
@@ -349,7 +373,7 @@ class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertIn("5001,278,Exporter,VIP", csv_str)
 
     async def test_dynamic_column_migration(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
             db_path = os.path.join(tmpdir, "test_migration.db")
             import sqlite3
             # Create old schema table missing new columns
