@@ -19,8 +19,13 @@ class MainMenuEmbed(discord.Embed):
             inline=True
         )
         self.add_field(
+            name="👥 Players",
+            value="> Manage player IDs,\n> kingdoms & registry.",
+            inline=True
+        )
+        self.add_field(
             name="🛠️ Utilities",
-            value="> Access powerful server\n> management tools.",
+            value="> Code redemption,\n> countdowns & tools.",
             inline=True
         )
 

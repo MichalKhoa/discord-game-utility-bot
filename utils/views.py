@@ -2,8 +2,10 @@ import discord
 from discord.ext import commands, tasks
 
 from utils.embeds import MainMenuEmbed
-from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal
+from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal, SearchPlayerModal
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
+from databases.player_database import PlayerDatabase
+from cogs.player_manager import PlayerAddModal, PlayerListView
 
 
 class MenuButtons(discord.ui.View):
@@ -11,7 +13,7 @@ class MenuButtons(discord.ui.View):
         super().__init__(timeout=43200)
         self.bot = bot
 
-    @discord.ui.button(label="Games", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Games", style=discord.ButtonStyle.primary, emoji="🎮")
     async def games_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         games_menu_panel = discord.Embed(
             title="Choose one the games below:",
@@ -23,19 +25,48 @@ class MenuButtons(discord.ui.View):
         )
         await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
 
-    @discord.ui.button(label="Utilities", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Players", style=discord.ButtonStyle.primary, emoji="👥")
+    async def players_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player_menu_panel = discord.Embed(
+            title="👥 Player Registry & Management",
+            description="Manage game player accounts, kingdom IDs, and warning flags.",
+            colour=discord.Colour.teal()
+        )
+        player_menu_panel.add_field(
+            name="📋 View Player List",
+            value="> Browse all registered players with pagination and filters.",
+            inline=False
+        )
+        player_menu_panel.add_field(
+            name="➕ Add / 🔍 Search & Edit",
+            value="> Register new players or edit kingdom/FID with live API check.",
+            inline=False
+        )
+        player_menu_panel.add_field(
+            name="⚠️ Flagged / 📊 Stats / 📥 Export",
+            value="> Review problematic accounts, kingdom stats, or download CSV.",
+            inline=False
+        )
+        await interaction.response.edit_message(embed=player_menu_panel, view=PlayerMenuButtons(self.bot))
+
+    @discord.ui.button(label="Utilities", style=discord.ButtonStyle.primary, emoji="🛠️")
     async def utility_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         utility_menu_panel = discord.Embed(
             title="Choose one of the options below:",
             colour=discord.Colour.yellow())
         utility_menu_panel.add_field(
             name="🪙 Redeem codes for everyone",
-            value="> **A new KS gift code has been released?**\nRedeem it for everyone now (Please take note, that the process might take some time to finish.)",
+            value="> Redeem gift code for all registered accounts with verification.",
             inline=False
         )
         utility_menu_panel.add_field(
             name="👤 Redeem code for one player",
-            value="> Redeem a KS gift code for a single player ID instantly.",
+            value="> Redeem gift code for a single player ID instantly.",
+            inline=False
+        )
+        utility_menu_panel.add_field(
+            name="📜 Redeem History",
+            value="> Check recently redeemed codes and timestamps.",
             inline=False
         )
         utility_menu_panel.add_field(
@@ -46,22 +77,60 @@ class MenuButtons(discord.ui.View):
         await interaction.response.edit_message(embed=utility_menu_panel, view=UtilityMenuButtons(self.bot))
 
 
-class GameMenuButtons(discord.ui.View):
+class PlayerMenuButtons(discord.ui.View):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
         self.bot = bot
+        self.db = PlayerDatabase()
 
-    @discord.ui.button(label="Would you rather ...", style=discord.ButtonStyle.primary)
-    async def wyr_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        wyr_cog = self.bot.get_cog("Wyr")
+    @discord.ui.button(label="View Player List", style=discord.ButtonStyle.primary, emoji="📋", row=0)
+    async def view_list_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        players = await self.db.get_all_players()
+        if not players:
+            await interaction.followup.send("⚠️ No registered players found in database.", ephemeral=True)
+            return
+        view = PlayerListView(self.db, players)
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
-        if wyr_cog:
-            await wyr_cog.start_wyr_game(interaction)
+    @discord.ui.button(label="Add Player", style=discord.ButtonStyle.success, emoji="➕", row=0)
+    async def add_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(PlayerAddModal(self.db))
+
+    @discord.ui.button(label="Search / Edit", style=discord.ButtonStyle.primary, emoji="🔍", row=0)
+    async def search_player_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pm_cog = self.bot.get_cog("PlayerManager")
+        if pm_cog:
+            await interaction.response.send_modal(SearchPlayerModal(pm_cog))
         else:
-            await interaction.response.send_message("Wyr module error", ephemeral=True)
+            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
 
-    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary)
-    async def return_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Flagged Players", style=discord.ButtonStyle.danger, emoji="⚠️", row=1)
+    async def flagged_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pm_cog = self.bot.get_cog("PlayerManager")
+        if pm_cog:
+            await pm_cog.flagged_players(interaction)
+        else:
+            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+
+    @discord.ui.button(label="Player Stats", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
+    async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pm_cog = self.bot.get_cog("PlayerManager")
+        if pm_cog:
+            await pm_cog.player_stats(interaction)
+        else:
+            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+
+    @discord.ui.button(label="Export CSV", style=discord.ButtonStyle.secondary, emoji="📥", row=1)
+    async def export_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pm_cog = self.bot.get_cog("PlayerManager")
+        if pm_cog:
+            await pm_cog.export_csv_cmd(interaction)
+        else:
+            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
+    async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)
         await interaction.response.edit_message(embed=embed, view=view)
@@ -72,31 +141,31 @@ class UtilityMenuButtons(discord.ui.View):
         super().__init__(timeout=43200)
         self.bot = bot
 
-    @discord.ui.button(label="Redeem a Gift Code for everyone", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Redeem for Everyone", style=discord.ButtonStyle.primary, emoji="🪙", row=0)
     async def redeem_for_all_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         redeem_cog = self.bot.get_cog("CodeRedeem")
-
         if redeem_cog:
             await interaction.response.send_modal(RedeemModal(redeem_cog))
         else:
             await interaction.response.send_message("CodeRedeem module error", ephemeral=True)
 
-    @discord.ui.button(label="Redeem for Single Player", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Redeem for Single Player", style=discord.ButtonStyle.primary, emoji="👤", row=0)
     async def redeem_for_player_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         redeem_cog = self.bot.get_cog("CodeRedeem")
-
         if redeem_cog:
             await interaction.response.send_modal(RedeemSingleModal(redeem_cog))
         else:
             await interaction.response.send_message("CodeRedeem module error", ephemeral=True)
 
+    @discord.ui.button(label="Redeem History", style=discord.ButtonStyle.secondary, emoji="📜", row=1)
+    async def redeem_history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        redeem_cog = self.bot.get_cog("CodeRedeem")
+        if redeem_cog:
+            await redeem_cog.redeem_history(interaction)
+        else:
+            await interaction.response.send_message("CodeRedeem module error", ephemeral=True)
 
-    # @discord.ui.button(label="Melody is a nerd", style=discord.ButtonStyle.danger)
-    # async def dm_melody(self, interaction: discord.Interaction, button: discord.ui.Button):
-    #     mention = f"<@1269222243569897513>"
-    #     await interaction.response.send_message(f"Hey {mention}, stop being so nerdy!")
-
-    @discord.ui.button(label="Rally Countdown", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Rally Countdown", style=discord.ButtonStyle.primary, emoji="🎙️", row=1)
     async def rally_countdown_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="🎙️ Rally Countdown Panel",
@@ -105,7 +174,7 @@ class UtilityMenuButtons(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=RallyCountdownView(self.bot))
 
-    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
     async def return_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)

@@ -34,8 +34,14 @@ class RedeemSingleModal(discord.ui.Modal, title='Redeem for Single Player'):
         label='Enter the Player ID (FID)',
         placeholder='e.g. 49089798',
         min_length=5,
-        max_length=15,
+        max_length=20,
         required=True
+    )
+    kingdom_input = discord.ui.TextInput(
+        label='Kingdom ID (Optional - default: saved/278)',
+        placeholder='e.g. 278',
+        required=False,
+        max_length=10
     )
 
     def __init__(self, cog):
@@ -45,7 +51,25 @@ class RedeemSingleModal(discord.ui.Modal, title='Redeem for Single Player'):
     async def on_submit(self, interaction: discord.Interaction):
         gift_code = self.code_input.value.strip()
         player_id = self.player_input.value.strip()
-        await self.cog.redeem_code_for_player(interaction, gift_code, player_id)
+        kingdom_id = self.kingdom_input.value.strip() or None
+        await self.cog.redeem_code_for_player(interaction, gift_code, player_id, kingdom_id)
+
+
+class SearchPlayerModal(discord.ui.Modal, title='Search / Edit Player'):
+    query_input = discord.ui.TextInput(
+        label='Enter Player Name, FID, or Alliance',
+        placeholder='e.g. HimAlt or 117280427',
+        min_length=2,
+        max_length=50,
+        required=True
+    )
+
+    def __init__(self, player_manager_cog):
+        super().__init__()
+        self.cog = player_manager_cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.search_player(interaction, self.query_input.value.strip())
 
 
 class CustomCountdownModal(discord.ui.Modal, title='Custom Countdown'):
