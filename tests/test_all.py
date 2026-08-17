@@ -1,29 +1,78 @@
 import os
+import io
 import unittest
+from unittest.mock import patch, MagicMock, AsyncMock
 import tempfile
 import hashlib
-from utils.castle_battle_support import format_time, calculate_reinforcement_window
-from utils.redeem_code import encode_data, classify, KS_ENCRYPT_KEY
+import discord
+
+from utils.castle_battle_support import (
+    format_time,
+    calculate_reinforcement_window,
+    create_reinforcement_embed,
+    time_to_reinforce
+)
+from utils.redeem_code import (
+    encode_data,
+    classify,
+    get_headers,
+    make_progress_bar,
+    fetch_player_info,
+    verify_player,
+    flag_player_sync,
+    unflag_player_sync,
+    KS_ENCRYPT_KEY
+)
+from utils.code_detector import (
+    extract_candidate_codes,
+    create_detected_code_embed,
+    process_announcement_message,
+    WATCHED_CHANNELS,
+    IGNORED_WORDS
+)
 from databases.player_database import PlayerDatabase
+from databases.wyr_database import Question_Database
 
 
 class TestBattleSupport(unittest.TestCase):
     def test_format_time(self):
         self.assertEqual(format_time(0), "00:00")
+        self.assertEqual(format_time(59), "00:59")
+        self.assertEqual(format_time(60), "01:00")
         self.assertEqual(format_time(65), "01:05")
         self.assertEqual(format_time(120), "02:00")
         self.assertEqual(format_time(3599), "59:59")
 
     def test_calculate_reinforcement_window_longer_march(self):
+        # User march = 120s, enemy = 100s, gap = 10s -> march_diff = 20s
         res = calculate_reinforcement_window(opponent_march_time=100, gap_between_rallies=10, user_march_time=120)
         self.assertEqual(res["march_diff"], 20)
         self.assertIn("00:20", res["action"])
         self.assertIn("00:10", res["action"])
+        self.assertIn("00:10", res["timing_detail"])
+
+    def test_calculate_reinforcement_window_equal_march(self):
+        # User march = 100s, enemy = 100s, gap = 10s -> march_diff = 0s
+        res = calculate_reinforcement_window(opponent_march_time=100, gap_between_rallies=10, user_march_time=100)
+        self.assertEqual(res["march_diff"], 0)
+        self.assertIn("00:00", res["action"])
 
     def test_calculate_reinforcement_window_shorter_march(self):
+        # User march = 80s, enemy = 100s, gap = 10s -> march_diff = -20s
         res = calculate_reinforcement_window(opponent_march_time=100, gap_between_rallies=10, user_march_time=80)
         self.assertEqual(res["march_diff"], -20)
         self.assertIn("00:20", res["timing_detail"])
+
+    def test_create_reinforcement_embed(self):
+        embed = create_reinforcement_embed(opponent_march_time=100, gap_between_rallies=10, user_march_time=120)
+        self.assertIsInstance(embed, discord.Embed)
+        self.assertEqual(embed.title, "🏰 Castle Defense: Reinforcement Timing")
+        self.assertEqual(len(embed.fields), 3)
+
+    def test_time_to_reinforce_legacy(self):
+        res = time_to_reinforce(100, 10, 120)
+        self.assertIsInstance(res, str)
+        self.assertIn("Send garrison", res)
 
 
 class TestRedeemUtils(unittest.TestCase):
@@ -35,44 +84,162 @@ class TestRedeemUtils(unittest.TestCase):
         expected_hash = hashlib.md5(expected_str.encode()).hexdigest()
         self.assertEqual(signed["sign"], expected_hash)
 
-    def test_classify_status(self):
-        self.assertEqual(classify({"msg": "SUCCESS", "err_code": 0}), "SUCCESS")
-        self.assertEqual(classify({"msg": "RECEIVED", "err_code": 40008}), "RECEIVED")
-        self.assertEqual(classify({"msg": "TIME ERROR", "err_code": 40007}), "TIME ERROR")
-        self.assertEqual(classify({"msg": "CDK NOT FOUND", "err_code": 40014}), "CDK NOT FOUND")
-        self.assertEqual(classify({"msg": "TOO FREQUENT", "err_code": 40019}), "TOO FREQUENT")
-        self.assertEqual(classify({"msg": "Role not exist", "err_code": 40001}), "ROLE NOT EXIST")
+    def test_classify_all_codes(self):
+        test_cases = [
+            ({"msg": "SUCCESS", "err_code": 0}, "SUCCESS"),
+            ({"msg": "RECEIVED", "err_code": 40008}, "RECEIVED"),
+            ({"msg": "SAME TYPE EXCHANGE", "err_code": 40011}, "SAME TYPE EXCHANGE"),
+            ({"msg": "TIME ERROR", "err_code": 40007}, "TIME ERROR"),
+            ({"msg": "CDK NOT FOUND", "err_code": 40014}, "CDK NOT FOUND"),
+            ({"msg": "USED", "err_code": 40005}, "USED"),
+            ({"msg": "TIMEOUT RETRY", "err_code": 40004}, "TIMEOUT RETRY"),
+            ({"msg": "TOO FREQUENT", "err_code": 40019}, "TOO FREQUENT"),
+            ({"msg": "USER INFO ERROR", "err_code": 40020}, "USER INFO ERROR"),
+            ({"msg": "Role not exist", "err_code": 40001}, "ROLE NOT EXIST"),
+            ({"msg": "STOVE_LV ERROR", "err_code": 40006}, "STOVE_LV ERROR"),
+            ({"msg": "RECHARGE_MONEY ERROR", "err_code": 40017}, "RECHARGE_MONEY ERROR"),
+            ({"msg": "RECHARGE_MONEY_VIP ERROR", "err_code": 40018}, "RECHARGE_MONEY_VIP ERROR"),
+            ({"msg": "sign error", "err_code": 40000}, "SIGN ERROR"),
+            ({"msg": "NOT LOGIN", "err_code": 40002}, "NOT LOGIN"),
+            ("not a dict", "Invalid response format"),
+            ({"msg": "CUSTOM_ERROR"}, "CUSTOM_ERROR"),
+        ]
+        for payload, expected in test_cases:
+            self.assertEqual(classify(payload), expected)
+
+    def test_get_headers(self):
+        headers = get_headers()
+        self.assertIn("user-agent", headers)
+        self.assertIn("sec-ch-ua", headers)
+        self.assertIn("origin", headers)
+
+    def test_make_progress_bar(self):
+        self.assertEqual(make_progress_bar(0, 10, length=10), "░░░░░░░░░░")
+        self.assertEqual(make_progress_bar(5, 10, length=10), "█████░░░░░")
+        self.assertEqual(make_progress_bar(10, 10, length=10), "██████████")
+        self.assertEqual(make_progress_bar(0, 0, length=10), "░░░░░░░░░░")
+
+    @patch("utils.redeem_code.send_signed_post")
+    def test_fetch_player_info_success(self, mock_post):
+        mock_post.return_value = {
+            "msg": "SUCCESS",
+            "err_code": 0,
+            "data": {
+                "nickname": "TestLord",
+                "fid": "12345",
+                "kid": "278",
+                "stove_lv": 30
+            }
+        }
+        res = fetch_player_info("12345", "278")
+        self.assertTrue(res["success"])
+        self.assertEqual(res["nickname"], "TestLord")
+        self.assertEqual(res["stove_lv"], 30)
+
+    @patch("utils.redeem_code.send_signed_post")
+    def test_fetch_player_info_not_found(self, mock_post):
+        mock_post.return_value = {
+            "msg": "ROLE NOT EXIST",
+            "err_code": 40001,
+            "data": None
+        }
+        res = fetch_player_info("99999", "278")
+        self.assertFalse(res["success"])
+
+    @patch("utils.redeem_code.send_signed_post")
+    def test_verify_player_success(self, mock_post):
+        mock_post.return_value = {
+            "msg": "SUCCESS",
+            "err_code": 0,
+            "data": {"nickname": "KingHero", "fid": "11111", "kid": "278"}
+        }
+        valid, msg = verify_player("11111", "278")
+        self.assertTrue(valid)
+        self.assertIn("KingHero", msg)
+
+    def test_flag_and_unflag_sync(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_sync.db")
+            # Create table
+            import sqlite3
+            with sqlite3.connect(db_path) as conn:
+                conn.execute('''
+                    CREATE TABLE players (
+                        fid TEXT PRIMARY KEY,
+                        kid TEXT,
+                        name TEXT,
+                        alliance TEXT,
+                        discord_id INTEGER,
+                        status TEXT DEFAULT 'ACTIVE',
+                        warning_count INTEGER DEFAULT 0,
+                        warning_reason TEXT,
+                        created_at TIMESTAMP,
+                        updated_at TIMESTAMP
+                    )
+                ''')
+                conn.execute("INSERT INTO players (fid, kid, name, status) VALUES ('123', '278', 'Player1', 'ACTIVE')")
+                conn.commit()
+
+            # Flag player
+            flag_player_sync("123", "RATE_LIMITED", db_path=db_path, threshold=3)
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute("SELECT status, warning_count, warning_reason FROM players WHERE fid = '123'").fetchone()
+                self.assertEqual(row[0], "FLAGGED")
+                self.assertEqual(row[1], 1)
+                self.assertEqual(row[2], "RATE_LIMITED")
+
+            # Unflag player
+            unflag_player_sync("123", db_path=db_path)
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute("SELECT status, warning_count, warning_reason FROM players WHERE fid = '123'").fetchone()
+                self.assertEqual(row[0], "ACTIVE")
+                self.assertEqual(row[1], 0)
+                self.assertIsNone(row[2])
 
 
 class TestCodeDetector(unittest.TestCase):
-    def test_extract_candidate_codes(self):
-        from utils.code_detector import extract_candidate_codes, WATCHED_CHANNELS
-
-        # Check watched channel IDs
+    def test_watched_channels(self):
         self.assertIn(1374889273077272636, WATCHED_CHANNELS)
         self.assertIn(1374888983812902993, WATCHED_CHANNELS)
         self.assertIn(1374888701204758599, WATCHED_CHANNELS)
 
-        # Explicit gift code format
-        text1 = "🎉 New Gift Code Available!\nGift Code: **KINGSHOT2026**\nValid until Aug 25"
-        self.assertEqual(extract_candidate_codes(text1), ["KINGSHOT2026"])
+    def test_extract_candidate_codes_all_formats(self):
+        # Format 1: Gift Code: XYZ
+        t1 = "Gift Code: **KINGSHOT2026**\nClaim before August!"
+        self.assertEqual(extract_candidate_codes(t1), ["KINGSHOT2026"])
 
-        # CDK format
-        text2 = "CDK: WOSSUMMER24\nClaim fast!"
-        self.assertEqual(extract_candidate_codes(text2), ["WOSSUMMER24"])
+        # Format 2: CDK: XYZ
+        t2 = "CDK: `WOSSUMMER`"
+        self.assertEqual(extract_candidate_codes(t2), ["WOSSUMMER"])
 
-        # Backticks format
-        text3 = "Here is your code: `HAPPYWEEKEND` for all players!"
-        self.assertEqual(extract_candidate_codes(text3), ["HAPPYWEEKEND"])
+        # Format 3: Backticks
+        t3 = "Here is a code: `VALENTINE2026` for all members"
+        self.assertEqual(extract_candidate_codes(t3), ["VALENTINE2026"])
 
-        # Arrows format
-        text4 = "Use code >> VALENTINE2026 << in game"
-        self.assertEqual(extract_candidate_codes(text4), ["VALENTINE2026"])
+        # Format 4: >> CODE <<
+        t4 = "Redeem >> EASTER2026 << in game settings"
+        self.assertEqual(extract_candidate_codes(t4), ["EASTER2026"])
 
-        # Filter ignored words & URLs
-        text5 = "Join our DISCORD server at https://discord.gg/century for ANNOUNCEMENT"
-        self.assertEqual(extract_candidate_codes(text5), [])
+        # Deduplication
+        t5 = "Gift Code: `GIFT50` and also CDK: GIFT50"
+        self.assertEqual(extract_candidate_codes(t5), ["GIFT50"])
 
+        # Ignore noise & URLs
+        t6 = "Visit our DISCORD at https://discord.gg/test for ANNOUNCEMENT and UPDATE"
+        self.assertEqual(extract_candidate_codes(t6), [])
+
+    def test_create_detected_code_embed(self):
+        mock_msg = MagicMock(spec=discord.Message)
+        mock_msg.channel = MagicMock()
+        mock_msg.channel.id = 1374889273077272636
+        mock_msg.author = MagicMock()
+        mock_msg.author.display_name = "Kingshot Announcer"
+        mock_msg.author.display_avatar.url = "https://example.com/avatar.png"
+        mock_msg.content = "New Gift Code: KING2026"
+
+        embed = create_detected_code_embed("KING2026", mock_msg)
+        self.assertIsInstance(embed, discord.Embed)
+        self.assertIn("KING2026", embed.description)
 
 
 class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
@@ -110,6 +277,96 @@ class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
             stats = await db.get_stats()
             self.assertEqual(stats["total"], 1)
             self.assertEqual(stats["active"], 1)
+
+    async def test_bulk_upsert_and_filtering(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_bulk.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            players_data = [
+                {"fid": "1001", "kid": "278", "name": "Alice", "alliance": "NOR"},
+                {"fid": "1002", "kid": "278", "name": "Bob", "alliance": "NOR"},
+                {"fid": "1003", "kid": "279", "name": "Charlie", "alliance": "SOL"},
+            ]
+            count = await db.bulk_upsert_players(players_data)
+            self.assertEqual(count, 3)
+
+            # Filter by alliance
+            nor_players = await db.get_all_players(alliance="NOR")
+            self.assertEqual(len(nor_players), 2)
+
+            # Filter by kingdom
+            k279_players = await db.get_all_players(kingdom="279")
+            self.assertEqual(len(k279_players), 1)
+            self.assertEqual(k279_players[0]["name"], "Charlie")
+
+            # Search players
+            search_res = await db.search_players("Ali")
+            self.assertEqual(len(search_res), 1)
+            self.assertEqual(search_res[0]["fid"], "1001")
+
+            # Alliances list
+            alliances = await db.get_alliances()
+            self.assertEqual(alliances, ["NOR", "SOL"])
+
+            # Delete player
+            del_ok = await db.delete_player("1001")
+            self.assertTrue(del_ok)
+            self.assertIsNone(await db.get_player("1001"))
+
+    async def test_redeemed_codes_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_codes.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            # Not redeemed initially
+            self.assertIsNone(await db.is_code_redeemed("SUMMER2026"))
+
+            # Log code
+            await db.log_redeemed_code("SUMMER2026", redeemed_by=123456, success_count=50, total_attempted=55)
+
+            # Check redeemed
+            entry = await db.is_code_redeemed("SUMMER2026")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["code"], "SUMMER2026")
+            self.assertEqual(entry["success_count"], 50)
+
+            # History list
+            history = await db.get_redeemed_codes()
+            self.assertEqual(len(history), 1)
+
+    async def test_csv_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_csv.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            await db.upsert_player(fid="5001", kid="278", name="Exporter", alliance="VIP")
+            csv_str = await db.export_csv()
+            self.assertIn("fid,kid,name,alliance", csv_str)
+            self.assertIn("5001,278,Exporter,VIP", csv_str)
+
+
+class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
+    async def test_wyr_database_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_wyr.db")
+            db = Question_Database(db_path)
+            await db.init_db()
+
+            # Empty returns None
+            self.assertIsNone(await db.get_random_wyr_question())
+
+            # Add question with tags
+            await db.add_wyr_question("Eat pizza everyday", "Eat tacos everyday", ["food", "lifestyle"], rating="SFW")
+
+            # Fetch random question
+            q = await db.get_random_wyr_question()
+            self.assertIsNotNone(q)
+            self.assertEqual(q[0], "Eat pizza everyday")
+            self.assertEqual(q[1], "Eat tacos everyday")
 
 
 if __name__ == '__main__':

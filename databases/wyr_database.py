@@ -2,10 +2,16 @@ import os
 import aiosqlite
 import asyncio
 
+from typing import Optional, List
+
 class Question_Database:
-    def __init__(self):
-        db_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.db_path = os.path.join(db_dir, 'data', 'wyr_question_bank.db')
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            db_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self.db_path = os.path.join(db_dir, 'data', 'wyr_question_bank.db')
+        else:
+            self.db_path = db_path
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
