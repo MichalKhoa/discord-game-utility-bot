@@ -103,7 +103,7 @@ class DetectedCodeView(discord.ui.View):
             await interaction.followup.send("❌ Error: `CodeRedeem` cog is not currently loaded.", ephemeral=True)
             return
 
-        await code_redeem_cog._start_batch_redemption(interaction, [self.code])
+        await code_redeem_cog._execute_batch_redemption(interaction, [self.code])
 
 
 async def process_announcement_message(message: discord.Message, bot: discord.Client, db) -> List[str]:
