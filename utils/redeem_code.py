@@ -4,9 +4,12 @@ import hashlib
 import json
 import os
 import random
+import sqlite3
 import time
 from time import perf_counter, process_time
+from typing import Tuple, List, Optional
 import requests
+
 
 
 def update_file_from_public_url(doc_id: str, local_destination: str) -> bool:
@@ -241,6 +244,73 @@ def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM):
     return res
 
 
+def verify_player(fid: str, kid: str = DEFAULT_KINGDOM) -> Tuple[bool, str]:
+    """
+    Validates player FID and Kingdom ID using Century Games API.
+    Returns (is_valid: bool, message: str).
+    """
+    res = send_signed_post("gift_code", {
+        "fid": str(fid).strip(),
+        "kid": str(kid).strip() if kid else DEFAULT_KINGDOM,
+        "cdk": "VERIFY_PING"
+    })
+    if "error" in res:
+        return False, f"API Connection Error: {res['error']}"
+
+    err_code = res.get("err_code")
+    msg = str(res.get("msg", "")).strip('.')
+
+    # 40014 = CDK NOT FOUND, 40007 = TIME ERROR -> means player & kingdom are valid!
+    if err_code in (40014, 40007, 0) or msg in ("CDK NOT FOUND", "TIME ERROR", "SUCCESS"):
+        return True, "Player and Kingdom verified"
+    elif err_code == 40020 or "USER INFO ERROR" in msg:
+        return False, f"Invalid Kingdom ID or Player ID does not belong to Kingdom {kid}"
+    elif err_code == 40001 or "not exist" in msg.lower():
+        return False, "Player ID does not exist"
+    else:
+        return False, f"API Response: {msg} ({err_code})"
+
+
+def flag_player_sync(fid: str, reason: str, db_path: str = "data/players.db", threshold: int = 3):
+    """Synchronously flag a player in SQLite DB during redemption batch."""
+    if not os.path.exists(db_path):
+        return
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT warning_count FROM players WHERE fid = ?", (str(fid).strip(),))
+            row = cursor.fetchone()
+            if not row:
+                return
+            new_count = row[0] + 1
+            new_status = "FLAGGED"
+            if new_count >= threshold or "ROLE NOT EXIST" in reason.upper():
+                new_status = "DISABLED"
+            cursor.execute(
+                "UPDATE players SET warning_count = ?, warning_reason = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE fid = ?",
+                (new_count, reason, new_status, str(fid).strip())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"Error flagging player {fid} in DB: {e}")
+
+
+def unflag_player_sync(fid: str, db_path: str = "data/players.db"):
+    """Synchronously reset warnings and set ACTIVE on success in SQLite DB."""
+    if not os.path.exists(db_path):
+        return
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE players SET warning_count = 0, warning_reason = NULL, status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP WHERE fid = ? AND (warning_count > 0 OR status != 'ACTIVE')",
+                (str(fid).strip(),)
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
 def parse_player_line(line):
     """Extract (fid, kid) from a text or CSV line."""
     line = line.strip()
@@ -254,38 +324,34 @@ def parse_player_line(line):
     return fid, kid
 
 
-def get_invalid_players_file(file_path):
-    dir_name = os.path.dirname(file_path) if file_path else "data"
-    if not dir_name:
-        dir_name = "data"
-    return os.path.join(dir_name, "invalid_players.txt")
-
-
-def load_invalid_players(invalid_file="data/invalid_players.txt"):
-    """Load set of invalid/wrong-kingdom FIDs from persistent file."""
-    if not os.path.exists(invalid_file):
-        return set()
+def load_players_from_db(db_path: str = "data/players.db") -> List[Tuple[str, str]]:
+    """Loads active (non-disabled) players from SQLite database."""
+    if not os.path.exists(db_path):
+        return []
     try:
-        with open(invalid_file, "r", encoding="utf-8") as f:
-            return {line.strip().split()[0] for line in f if line.strip() and not line.strip().startswith("#")}
-    except Exception:
-        return set()
-
-
-def mark_invalid_player(fid, reason="USER INFO ERROR", invalid_file="data/invalid_players.txt"):
-    """Persist an invalid/wrong-kingdom player ID so future runs skip it."""
-    try:
-        os.makedirs(os.path.dirname(invalid_file), exist_ok=True)
-        existing = load_invalid_players(invalid_file)
-        if fid not in existing:
-            with open(invalid_file, "a", encoding="utf-8") as f:
-                f.write(f"{fid} # {reason}\n")
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT fid, kid FROM players WHERE status != 'DISABLED' ORDER BY CAST(fid AS INTEGER)")
+            rows = cursor.fetchall()
+            return [(str(fid), str(kid or DEFAULT_KINGDOM)) for fid, kid in rows]
     except Exception as e:
-        print(f"Error marking invalid player {fid}: {e}")
+        print(f"Error loading players from DB: {e}")
+        return []
 
 
-def load_players(file_path, default_kingdom=DEFAULT_KINGDOM):
-    """Load and deduplicate (fid, kid) player pairs from a file, filtering out marked invalid players."""
+def load_players(file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM):
+    """Load and deduplicate (fid, kid) player pairs from SQLite DB or text/CSV file."""
+    # Check if target is SQLite DB
+    if file_path.endswith(".db") or os.path.exists("data/players.db"):
+        db_target = file_path if file_path.endswith(".db") else "data/players.db"
+        if os.path.exists(db_target):
+            db_players = load_players_from_db(db_target)
+            if db_players:
+                return db_players
+
+    if not os.path.exists(file_path):
+        return []
+
     encodings = ['utf-8-sig', 'utf-8', 'latin-1', 'gbk']
     lines = []
     for enc in encodings:
@@ -299,9 +365,6 @@ def load_players(file_path, default_kingdom=DEFAULT_KINGDOM):
             continue
         except Exception:
             return []
-
-    invalid_file = get_invalid_players_file(file_path)
-    invalid_fids = load_invalid_players(invalid_file)
 
     raw = []
     for line in lines:
@@ -317,20 +380,14 @@ def load_players(file_path, default_kingdom=DEFAULT_KINGDOM):
     players = []
     for fid in sorted(kingdoms, key=lambda x: int(x) if x.isdigit() else x):
         kid = kingdoms[fid]
-        # Skip if in invalid list UNLESS user explicitly assigned a numeric kingdom in file
-        if not kid and fid in invalid_fids:
-            continue
         players.append((fid, kid or default_kingdom or DEFAULT_KINGDOM))
 
     return players
 
 
-def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdom=DEFAULT_KINGDOM):
+def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM):
     start_time = perf_counter()
     start_time_CPU = process_time()
-
-    if not os.path.exists(file_path):
-        return f"File {file_path} not found."
 
     try:
         players = load_players(file_path, default_kingdom)
@@ -339,6 +396,8 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
 
     if not players:
         return f"No valid player IDs found in {file_path}."
+
+    db_path = file_path if file_path.endswith(".db") else "data/players.db"
 
     counters = {
         "success": 0,
@@ -352,11 +411,9 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
     retry_queue = {}
     cooldowns = {}
     processed_fids = set()
-    positions = {fid: i + 1 for i, (fid, _) in enumerate(players)}
     stop_processing = False
     consecutive_failures = 0
     fatal_reason = None
-    invalid_file = get_invalid_players_file(file_path)
 
     while len(processed_fids) < len(players) and not stop_processing:
         now = time.time()
@@ -401,11 +458,13 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
 
             if status in SUCCESS_STATUSES:
                 counters["success"] += 1
+                unflag_player_sync(fid, db_path)
             elif status == "RECEIVED":
                 counters["already_redeemed"] += 1
+                unflag_player_sync(fid, db_path)
             elif status in ("USER INFO ERROR", "ROLE NOT EXIST"):
                 counters["wrong_kingdom"] += 1
-                mark_invalid_player(fid, status, invalid_file)
+                flag_player_sync(fid, status, db_path)
             elif status in FATAL_STATUSES:
                 fatal_reason = RESULT_MESSAGES.get(status, status)
                 stop_processing = True
@@ -436,7 +495,7 @@ def redeem_for_all(giftCode: str, file_path="data/playerIDs.txt", default_kingdo
         f"(CPU: {result_time_CPU:.2f}s)\n"
         f"• Success: {counters['success']}\n"
         f"• Already redeemed: {counters['already_redeemed']}\n"
-        f"• Skipped (Wrong/Moved Kingdom): {counters['wrong_kingdom']}\n"
+        f"• Flagged (Wrong/Moved Kingdom or Role Not Exist): {counters['wrong_kingdom']}\n"
         f"• Rate limited: {counters['rate_limited']}\n"
         f"• Other Errors: {counters['errors']}"
     )

@@ -1,6 +1,25 @@
-utils/__pycache__/redeem_code.cpython-312.pyc
-utils/__pycache__/castle_battle_support.cpython-312.pyc
-databases/__pycache__/wyr_database.cpython-312.pyc
-__pycache__/main.cpython-312.pyc
-cogs/__pycache__/roast.cpython-312.pyc
-.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+
+# Local databases & runtime state
+data/players.db
+data/invalid_players.txt
+data/redeemed_codes.txt
+.bot.lock
+
+# Sensitive credentials & local duplicates
+token.txt
+service-account.json
+utils/service-account.json
+utils/playerIDs.txt

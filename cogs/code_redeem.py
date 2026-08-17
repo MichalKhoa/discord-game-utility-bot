@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from typing import Optional
 
 import utils.redeem_code
 
@@ -8,14 +9,19 @@ import asyncio
 import os
 import aiohttp
 
+import databases.player_database
+from databases.player_database import PlayerDatabase
+
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE'  # playerID.txt on GDisk
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
+LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "players.db")
+LEGACY_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
 
 
 class CodeRedeem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.db = PlayerDatabase()
         self.redeem_lock = asyncio.Lock()
         self.log_file = os.path.join(PROJECT_ROOT, "data", "redeemed_codes.txt")
         self.running_tasks = set()
@@ -40,17 +46,21 @@ class CodeRedeem(commands.Cog):
         await self.redeem_code_for_all(interaction, gift_code)
 
     @app_commands.command(name="redeem-for-player", description="Redeem codes (separated by ;) for a single player ID!")
-    @app_commands.describe(gift_code="The code(s) you want to redeem, separated by ;", player_id="The player's ID (FID)")
-    async def redeem_single(self, interaction: discord.Interaction, gift_code: str, player_id: str):
-        await self.redeem_code_for_player(interaction, gift_code, player_id)
+    @app_commands.describe(
+        gift_code="The code(s) you want to redeem, separated by ;",
+        player_id="The player's ID (FID)",
+        kingdom_id="The Kingdom ID (leave empty to use saved player kingdom or 278)"
+    )
+    async def redeem_single(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
+        await self.redeem_code_for_player(interaction, gift_code, player_id, kingdom_id)
 
     async def run_redeem(self, webhook_url, gift_codes, user_id):
         print(f"DEBUG: Starting run_redeem for {gift_codes}")
         async with self.redeem_lock:
             print("DEBUG: Acquired lock")
             try:
-                print("DEBUG: Syncing player IDs from Google Doc public export URL")
-                await asyncio.to_thread(utils.redeem_code.update_file_from_public_url, DOC_ID, LOCAL_PLAYER_IDS)
+                # Ensure DB is initialized
+                await self.db.init_db()
 
                 results = []
                 for code in gift_codes:
@@ -147,7 +157,7 @@ class CodeRedeem(commands.Cog):
             import traceback
             traceback.print_exc()
 
-    async def redeem_code_for_player(self, interaction: discord.Interaction, gift_code: str, player_id: str):
+    async def redeem_code_for_player(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
         print(f"DEBUG: redeem_code_for_player called with {gift_code} for {player_id}")
 
         codes = [c.strip().upper() for c in gift_code.split(';') if c.strip()]
@@ -158,18 +168,30 @@ class CodeRedeem(commands.Cog):
         await interaction.response.defer(thinking=True)
 
         try:
+            # Resolve kingdom ID
+            target_kid = kingdom_id
+            player_info = await self.db.get_player(player_id)
+            if not target_kid:
+                if player_info and player_info.get("kid"):
+                    target_kid = player_info["kid"]
+                else:
+                    target_kid = "278"
+
+            player_name = player_info.get("name") if player_info else ""
+            display_name = f" ({player_name})" if player_name else ""
+
             results = []
             for code in codes:
                 redeem_result = await asyncio.to_thread(
                     utils.redeem_code.send_signed_post,
                     "gift_code",
-                    {"fid": player_id, "cdk": code, "kid": "278"}
+                    {"fid": player_id, "cdk": code, "kid": target_kid}
                 )
 
                 msg = redeem_result.get('msg', '').replace('.', '')
                 if msg == "TIMEOUT RETRY":
                     print(f"Retrying single player for code {code}...")
-                    retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, "278")
+                    retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, target_kid)
                     if retry_result:
                         redeem_result = retry_result
                         msg = retry_result.get('msg', '').replace('.', '')
@@ -185,7 +207,7 @@ class CodeRedeem(commands.Cog):
 
             combined_results = "\n".join(results)
             await interaction.followup.send(
-                f"👤 **Player ID**: `{player_id}` (Kingdom 278)\n" + combined_results
+                f"👤 **Player ID**: `{player_id}`{display_name} (Kingdom {target_kid})\n" + combined_results
             )
         except Exception as e:
             print(f"DEBUG: Error in redeem_code_for_player: {e}")
