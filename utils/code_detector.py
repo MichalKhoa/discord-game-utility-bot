@@ -49,8 +49,32 @@ def extract_candidate_codes(text: str) -> List[str]:
     return found_codes
 
 
-def create_detected_code_embed(code: str, message: discord.Message) -> discord.Embed:
+def extract_validity_info(text: str) -> Optional[str]:
+    """Extracts expiration or validity date/time string from announcement text if present."""
+    if not text:
+        return None
+    pattern = r"(?:valid\s*until|valid\s*thru|valid\s*through|expires\s*at|expires|expiration\s*date|expiration|deadline)[^\w\n]*?(?:[:=\-–—>]|\bis\b)[^\w\n]*?([^\n\r]+)"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+    if match:
+        val = match.group(1).strip().strip("`*_").strip()
+        if val and len(val) <= 80:
+            return val
+    return None
+
+
+def create_detected_code_embed(code: str, message: discord.Message, validity: Optional[str] = None) -> discord.Embed:
     """Builds an alert embed when a new gift code is detected in announcement channels."""
+    if validity is None and message:
+        full_text = message.content or ""
+        for emb in message.embeds:
+            if emb.title:
+                full_text += f"\n{emb.title}"
+            if emb.description:
+                full_text += f"\n{emb.description}"
+            for f in emb.fields:
+                full_text += f"\n{f.name} {f.value}"
+        validity = extract_validity_info(full_text)
+
     embed = discord.Embed(
         title="🎁 New Official Gift Code Detected!",
         description=f"**Code**: `{code}`\n\nDetected in announcement channel <#{message.channel.id}>.",
@@ -58,7 +82,10 @@ def create_detected_code_embed(code: str, message: discord.Message) -> discord.E
     )
     if message.author:
         embed.set_author(name=f"Source: {message.author.display_name}", icon_url=message.author.display_avatar.url)
-    
+
+    if validity:
+        embed.add_field(name="📅 Valid Until", value=f"**{validity}**", inline=False)
+
     snippet = message.content[:200] + ("..." if len(message.content) > 200 else "")
     if snippet:
         embed.add_field(name="📢 Announcement Snippet", value=f"> {snippet}", inline=False)

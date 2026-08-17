@@ -27,6 +27,7 @@ from utils.redeem_code import (
 )
 from utils.code_detector import (
     extract_candidate_codes,
+    extract_validity_info,
     create_detected_code_embed,
     process_announcement_message,
     WATCHED_CHANNELS,
@@ -260,6 +261,17 @@ class TestCodeDetector(unittest.TestCase):
         t6 = "Visit our DISCORD at https://discord.gg/test for ANNOUNCEMENT and UPDATE"
         self.assertEqual(extract_candidate_codes(t6), [])
 
+    def test_extract_validity_info(self):
+        text = "🎁 Gift Code: HAPPYEMOJIDAY \n📅 Valid Until: July 21st, 23:59 (UTC+0)"
+        validity = extract_validity_info(text)
+        self.assertEqual(validity, "July 21st, 23:59 (UTC+0)")
+
+        text2 = "**Gift Code:** ABCDE\n**Expires:** 2026-09-01"
+        self.assertEqual(extract_validity_info(text2), "2026-09-01")
+
+        text3 = "No expiration date provided"
+        self.assertIsNone(extract_validity_info(text3))
+
     def test_create_detected_code_embed(self):
         mock_msg = MagicMock(spec=discord.Message)
         mock_msg.channel = MagicMock()
@@ -267,11 +279,16 @@ class TestCodeDetector(unittest.TestCase):
         mock_msg.author = MagicMock()
         mock_msg.author.display_name = "Kingshot Announcer"
         mock_msg.author.display_avatar.url = "https://example.com/avatar.png"
-        mock_msg.content = "New Gift Code: KING2026"
+        mock_msg.content = "🎁 Gift Code: HAPPYEMOJIDAY \n📅 Valid Until: July 21st, 23:59 (UTC+0)"
+        mock_msg.embeds = []
 
-        embed = create_detected_code_embed("KING2026", mock_msg)
+        embed = create_detected_code_embed("HAPPYEMOJIDAY", mock_msg)
         self.assertIsInstance(embed, discord.Embed)
-        self.assertIn("KING2026", embed.description)
+        self.assertIn("HAPPYEMOJIDAY", embed.description)
+        field_names = [f.name for f in embed.fields]
+        self.assertIn("📅 Valid Until", field_names)
+        validity_field = next(f for f in embed.fields if f.name == "📅 Valid Until")
+        self.assertIn("July 21st, 23:59 (UTC+0)", validity_field.value)
 
 
 class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
