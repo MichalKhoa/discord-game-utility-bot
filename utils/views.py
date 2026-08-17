@@ -85,7 +85,7 @@ class PlayerMenuButtons(discord.ui.View):
 
     @discord.ui.button(label="View Player List", style=discord.ButtonStyle.primary, emoji="📋", row=0)
     async def view_list_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         players = await self.db.get_all_players()
         if not players:
             await interaction.followup.send("⚠️ No registered players found in database.", ephemeral=True)

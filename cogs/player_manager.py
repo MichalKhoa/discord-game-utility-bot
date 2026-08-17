@@ -270,6 +270,9 @@ class PlayerManager(commands.Cog):
 
     player_group = app_commands.Group(name="player", description="Manage game player IDs and kingdoms")
 
+    async def cog_load(self):
+        await self.db.init_db()
+
     @commands.Cog.listener()
     async def on_ready(self):
         await self.db.init_db()
@@ -300,14 +303,14 @@ class PlayerManager(commands.Cog):
         kingdom: Optional[str] = None,
         status: Optional[str] = None
     ):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         players = await self.db.get_all_players(status=status, alliance=alliance, kingdom=kingdom)
         if not players:
-            await interaction.followup.send("⚠️ No players found matching the given filters.")
+            await interaction.followup.send("⚠️ No players found matching the given filters.", ephemeral=True)
             return
 
         view = PlayerListView(self.db, players, alliance_filter=alliance)
-        await interaction.followup.send(embed=view.get_embed(), view=view)
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
     @player_group.command(name="edit", description="Edit any player ID, Kingdom, Name, or Alliance with live verification")
     @app_commands.describe(player="Search by Player Name or FID to edit")
@@ -335,10 +338,10 @@ class PlayerManager(commands.Cog):
     @player_group.command(name="search", description="Search for a player by FID, Name, or Alliance")
     @app_commands.describe(query="Name, FID, or Alliance to search")
     async def search_player(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         results = await self.db.search_players(query, limit=10)
         if not results:
-            await interaction.followup.send(f"⚠️ No players found matching `{query}`.")
+            await interaction.followup.send(f"⚠️ No players found matching `{query}`.", ephemeral=True)
             return
 
         embed = discord.Embed(title=f"🔍 Search Results for '{query}'", colour=discord.Colour.og_blurple())
@@ -351,14 +354,19 @@ class PlayerManager(commands.Cog):
                 value=f"• FID: `{p.get('fid')}`\n• Kingdom: `K{p.get('kid')}`\n• Status: `{status}` ({p.get('warning_count', 0)} strikes){warning}",
                 inline=False
             )
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @player_group.command(name="flagged", description="View all flagged and disabled players needing attention")
     async def flagged_players(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         flagged = await self.db.get_flagged_players()
         if not flagged:
-            await interaction.followup.send("✅ Clean! No players are currently flagged or disabled.")
+            embed = discord.Embed(
+                title="✅ Flagged Players",
+                description="No players are currently flagged or disabled. All registered accounts are active and in good standing.",
+                colour=discord.Colour.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -376,7 +384,7 @@ class PlayerManager(commands.Cog):
             lines.append(f"{badge} **{p.get('name') or p.get('fid')}** (`{p.get('fid')}` | K{p.get('kid')}) — `{strikes} strikes`\n> ⚠️ *{reason}*")
 
         embed.description = "\n\n".join(lines)
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @player_group.command(name="unflag", description="Clear strikes and restore player to ACTIVE status")
     @app_commands.describe(player="Search by Player Name or FID to unflag")
@@ -391,14 +399,23 @@ class PlayerManager(commands.Cog):
     @player_group.command(name="prune-flagged", description="Remove dead or disabled player IDs exceeding strike limit")
     @app_commands.describe(min_strikes="Minimum number of strikes to prune (default: 3)")
     async def prune_flagged_cmd(self, interaction: discord.Interaction, min_strikes: int = 3):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         deleted_count = await self.db.prune_flagged(min_strikes=min_strikes)
-        await interaction.followup.send(f"🧹 Pruned **{deleted_count}** player(s) with ≥ {min_strikes} strikes / DISABLED status.")
+        await interaction.followup.send(f"🧹 Pruned **{deleted_count}** player(s) with ≥ {min_strikes} strikes / DISABLED status.", ephemeral=True)
 
     @player_group.command(name="stats", description="View total player statistics and kingdom breakdown")
     async def player_stats(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         stats = await self.db.get_stats()
+        if stats["total"] == 0:
+            embed = discord.Embed(
+                title="📊 Player Registry Statistics",
+                description="⚠️ No players registered in the database yet.\nUse `/player add` or click **Add Player** to register IDs.",
+                colour=discord.Colour.gold()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         embed = discord.Embed(title="📊 Player Registry Statistics", colour=discord.Colour.gold())
         embed.add_field(name="Total Players", value=str(stats["total"]), inline=True)
         embed.add_field(name="🟢 Active", value=str(stats["active"]), inline=True)
@@ -410,14 +427,14 @@ class PlayerManager(commands.Cog):
         a_breakdown = "\n".join(f"• **{a['alliance']}**: {a['count']} players" for a in stats["alliances"])
         embed.add_field(name="Top Alliances", value=a_breakdown or "None", inline=False)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @player_group.command(name="export", description="Export all player IDs as a CSV spreadsheet")
     async def export_csv_cmd(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         csv_data = await self.db.export_csv()
         file = discord.File(io.BytesIO(csv_data.encode('utf-8')), filename="player_ids.csv")
-        await interaction.followup.send("📥 Here is the current player export:", file=file)
+        await interaction.followup.send("📥 Here is the current player export:", file=file, ephemeral=True)
 
     @player_group.command(name="import", description="Import players from an attached CSV or text file")
     @app_commands.describe(file="CSV or TXT file to import")
