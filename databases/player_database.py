@@ -14,7 +14,7 @@ class PlayerDatabase:
             self.db_path = db_path
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
-    async def init_db(self):
+    async def init_db(self, auto_migrate: bool = True):
         """Initializes SQLite database and tables."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute('''
@@ -47,8 +47,9 @@ class PlayerDatabase:
             await db.commit()
 
         # Check if tables are empty, if so attempt migrations
-        await self._auto_migrate_if_empty()
-        await self._auto_migrate_redeemed_codes()
+        if auto_migrate:
+            await self._auto_migrate_if_empty()
+            await self._auto_migrate_redeemed_codes()
 
     async def _auto_migrate_if_empty(self):
         """Migrates from playerIDs.txt if the database table has 0 rows."""
@@ -180,6 +181,26 @@ class PlayerDatabase:
                 ''', (fid, kid, name, alliance, discord_id, status, warning_count, warning_reason))
             await db.commit()
         return len(players)
+
+    async def update_player_name_and_kid(self, fid: str, name: str, kid: Optional[str] = None) -> bool:
+        """Updates a player's in-game nickname and optionally kingdom ID."""
+        fid = str(fid).strip()
+        name = str(name).strip()
+        async with aiosqlite.connect(self.db_path) as db:
+            if kid:
+                await db.execute('''
+                    UPDATE players
+                    SET name = ?, kid = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE fid = ?
+                ''', (name, str(kid).strip(), fid))
+            else:
+                await db.execute('''
+                    UPDATE players
+                    SET name = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE fid = ?
+                ''', (name, fid))
+            await db.commit()
+        return True
 
     async def get_player(self, fid: str) -> Optional[Dict[str, Any]]:
         """Retrieves a single player by FID."""

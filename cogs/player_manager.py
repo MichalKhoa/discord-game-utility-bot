@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 import io
 from typing import Optional, List
 
@@ -455,6 +456,75 @@ class PlayerManager(commands.Cog):
             imported_count = await self.db.bulk_upsert_players(players_to_insert)
 
         await interaction.followup.send(f"✅ Imported/Updated **{imported_count}** player IDs.")
+
+    @player_group.command(name="sync-names", description="Auto-sync in-game nicknames and kingdoms from Century Games API")
+    @app_commands.describe(alliance="Optional: only sync players in this alliance")
+    async def sync_names_cmd(self, interaction: discord.Interaction, alliance: Optional[str] = None):
+        await interaction.response.defer(thinking=True)
+
+        if alliance:
+            players = await self.db.get_all_players(alliance=alliance)
+        else:
+            players = await self.db.get_active_players()
+
+        if not players:
+            await interaction.followup.send("❌ No players found to sync.", ephemeral=True)
+            return
+
+        total = len(players)
+        updated = 0
+        unchanged = 0
+        failed = 0
+        changes_log = []
+
+        status_msg = await interaction.followup.send(f"🔄 Syncing {total} player names from Century Games API... (0%)")
+
+        for idx, p in enumerate(players):
+            fid = str(p.get("fid", "")).strip()
+            current_name = str(p.get("name", "")).strip()
+            current_kid = str(p.get("kid", "278")).strip()
+
+            info = await discord.utils.maybe_coroutine(
+                utils.redeem_code.fetch_player_info, fid, current_kid
+            )
+
+            if info.get("success"):
+                new_name = info.get("nickname", "").strip()
+                new_kid = info.get("kid", current_kid).strip()
+
+                if new_name and (new_name != current_name or new_kid != current_kid):
+                    await self.db.update_player_name_and_kid(fid, new_name, new_kid)
+                    updated += 1
+                    changes_log.append(f"`{fid}`: `{current_name or 'N/A'}` ➔ **{new_name}** (K{new_kid})")
+                else:
+                    unchanged += 1
+            else:
+                failed += 1
+
+            if (idx + 1) % 10 == 0 or idx + 1 == total:
+                percent = int(((idx + 1) / total) * 100)
+                try:
+                    await status_msg.edit(content=f"🔄 Syncing player names... **{idx + 1}/{total}** ({percent}%)")
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.3)
+
+        embed = discord.Embed(
+            title="✅ In-Game Player Name Sync Complete",
+            colour=discord.Colour.green()
+        )
+        embed.add_field(name="Total Checked", value=str(total), inline=True)
+        embed.add_field(name="✏️ Names Updated", value=str(updated), inline=True)
+        embed.add_field(name="Unchanged / Failed", value=f"{unchanged} / {failed}", inline=True)
+
+        if changes_log:
+            sample_changes = "\n".join(changes_log[:15])
+            if len(changes_log) > 15:
+                sample_changes += f"\n...and {len(changes_log) - 15} more"
+            embed.add_field(name="Recent Updates", value=sample_changes, inline=False)
+
+        await status_msg.edit(content=None, embed=embed)
 
 
 async def setup(bot: commands.Bot):

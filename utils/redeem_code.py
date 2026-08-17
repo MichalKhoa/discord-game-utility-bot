@@ -7,7 +7,7 @@ import random
 import sqlite3
 import time
 from time import perf_counter, process_time
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict, Any
 import requests
 
 
@@ -244,11 +244,53 @@ def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM):
     return res
 
 
+def fetch_player_info(fid: str, kid: str = DEFAULT_KINGDOM) -> Dict[str, Any]:
+    """
+    Fetches real-time player info (nickname, stove level, kingdom) from Century Games API.
+    Returns a dict with 'success' (bool), 'nickname' (str), 'kid' (str), 'stove_lv' (int), and 'error' (str).
+    """
+    res = send_signed_post("player", {
+        "fid": str(fid).strip(),
+        "kid": str(kid).strip() if kid else DEFAULT_KINGDOM
+    })
+    if "error" in res:
+        return {"success": False, "nickname": "", "kid": str(kid), "stove_lv": 0, "fid": str(fid), "error": res["error"]}
+
+    err_code = res.get("err_code")
+    msg = str(res.get("msg", "")).strip('.')
+    data = res.get("data")
+
+    if (err_code == 0 or msg == "SUCCESS") and isinstance(data, dict):
+        return {
+            "success": True,
+            "nickname": str(data.get("nickname", "")).strip(),
+            "kid": str(data.get("kid", kid)).strip(),
+            "stove_lv": data.get("stove_lv", 0),
+            "fid": str(data.get("fid", fid)).strip(),
+            "error": ""
+        }
+
+    return {
+        "success": False,
+        "nickname": "",
+        "kid": str(kid),
+        "stove_lv": 0,
+        "fid": str(fid),
+        "error": f"{msg} ({err_code})" if err_code is not None else msg
+    }
+
+
 def verify_player(fid: str, kid: str = DEFAULT_KINGDOM) -> Tuple[bool, str]:
     """
     Validates player FID and Kingdom ID using Century Games API.
     Returns (is_valid: bool, message: str).
     """
+    # First attempt player info lookup
+    info = fetch_player_info(fid, kid)
+    if info["success"]:
+        return True, f"Verified: {info['nickname']} (K{info['kid']})"
+
+    # Fallback to gift_code verify ping if /api/player returned non-success
     res = send_signed_post("gift_code", {
         "fid": str(fid).strip(),
         "kid": str(kid).strip() if kid else DEFAULT_KINGDOM,

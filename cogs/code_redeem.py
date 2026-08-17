@@ -4,8 +4,10 @@ from discord.ext import commands
 from typing import Optional, List
 
 import utils.redeem_code
+import utils.code_detector
 
 import asyncio
+import datetime
 import os
 import aiohttp
 
@@ -111,6 +113,12 @@ class CodeRedeem(commands.Cog):
     async def on_ready(self):
         await self.db.init_db()
 
+    @commands.Cog.listener("on_message")
+    async def on_announcement_message(self, message: discord.Message):
+        if self.bot.user and message.author.id == self.bot.user.id:
+            return
+        await utils.code_detector.process_announcement_message(message, self.bot, self.db)
+
     @app_commands.command(name="redeem-for-all", description="Redeem codes (separated by ;) for in-game rewards!")
     @app_commands.describe(gift_code="The code(s) you want to redeem, separated by ;")
     async def redeem(self, interaction: discord.Interaction, gift_code: str):
@@ -141,6 +149,103 @@ class CodeRedeem(commands.Cog):
             lines.append(f"• `{code_str}` — *Redeemed on {date_str}*")
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(
+        name="redeem-scan-history",
+        description="Scan watched announcement channels for gift codes posted in recent history"
+    )
+    @app_commands.describe(days="Number of past days to scan (1 to 90, default: 30)")
+    async def scan_history_cmd(self, interaction: discord.Interaction, days: Optional[int] = 30):
+        await interaction.response.defer(thinking=True)
+
+        days = max(1, min(days or 30, 90))
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+
+        new_codes_found = []
+        already_redeemed_found = []
+        channel_status = []
+
+        for ch_id in utils.code_detector.WATCHED_CHANNELS:
+            channel = self.bot.get_channel(ch_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(ch_id)
+                except Exception as e:
+                    channel_status.append(f"• <#{ch_id}>: ❌ Inaccessible (`{e}`)")
+                    continue
+
+            # Check permissions
+            perms = channel.permissions_for(channel.guild.me) if channel.guild else None
+            if perms and not perms.read_message_history:
+                channel_status.append(f"• <#{ch_id}>: ❌ Missing `Read Message History` permission")
+                continue
+
+            try:
+                msg_count = 0
+                async for msg in channel.history(limit=200, after=cutoff):
+                    msg_count += 1
+                    full_text = msg.content or ""
+                    for emb in msg.embeds:
+                        if emb.title:
+                            full_text += f"\n{emb.title}"
+                        if emb.description:
+                            full_text += f"\n{emb.description}"
+                        for f in emb.fields:
+                            full_text += f"\n{f.name} {f.value}"
+
+                    extracted = utils.code_detector.extract_candidate_codes(full_text)
+                    for code in extracted:
+                        is_logged = await self.db.is_code_redeemed(code)
+                        if is_logged:
+                            if code not in already_redeemed_found:
+                                already_redeemed_found.append(code)
+                        else:
+                            if code not in new_codes_found:
+                                new_codes_found.append(code)
+
+                channel_status.append(f"• <#{ch_id}>: ✅ Scanned {msg_count} messages")
+            except Exception as e:
+                channel_status.append(f"• <#{ch_id}>: ⚠️ Error scanning history (`{e}`)")
+
+        embed = discord.Embed(
+            title=f"🔍 Announcement History Scan ({days} Days)",
+            colour=discord.Colour.green() if new_codes_found else discord.Colour.gold()
+        )
+
+        embed.add_field(
+            name="📡 Channel Access Status",
+            value="\n".join(channel_status) or "No channels configured",
+            inline=False
+        )
+
+        if new_codes_found:
+            codes_str = ", ".join(f"`{c}`" for c in new_codes_found)
+            embed.add_field(
+                name="🎁 New Unredeemed Codes Detected",
+                value=f"{codes_str}\n*(Click button below to redeem)*",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🎁 New Unredeemed Codes",
+                value="None found in scanned window.",
+                inline=False
+            )
+
+        if already_redeemed_found:
+            embed.add_field(
+                name="📦 Previously Redeemed Codes Found",
+                value=", ".join(f"`{c}`" for c in already_redeemed_found),
+                inline=False
+            )
+
+        if new_codes_found:
+            combined_code = ";".join(new_codes_found)
+            view = utils.code_detector.DetectedCodeView(combined_code, self.bot)
+            await interaction.followup.send(embed=embed, view=view)
+        else:
+            await interaction.followup.send(embed=embed)
+
 
     async def send_with_webhook_fallback(
         self,

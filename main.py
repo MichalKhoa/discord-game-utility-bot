@@ -21,8 +21,7 @@ from discord.ext import commands
 
 import databases.wyr_database
 from databases.wyr_database import Question_Database
-import utils.castle_battle_support
-from utils.castle_battle_support import time_to_reinforce
+
 
 class DiscordGameUtilityBot(commands.Bot):
     def __init__(self):
@@ -83,15 +82,7 @@ async def on_command_error(ctx, error):
 async def ping(ctx):
     await ctx.send("pong")
 
-@bot.command()
-async def reinforce(ctx, opponent_march_time: int, gap_between_rallies: int, user_march_time: int):
-    result = time_to_reinforce(opponent_march_time, gap_between_rallies, user_march_time)
-    await ctx.send(result)
 
-@bot.tree.command(name="reinforcement-timing", description="Calculate your timing to reinforce between rallies")
-async def reinforcement_timing(interaction: discord.Interaction, opponent_march_time: int, gap_between_rallies: int, user_march_time:int):
-    result = time_to_reinforce(opponent_march_time, gap_between_rallies, user_march_time)
-    await interaction.response.send_message(result)
 
 @bot.command()
 @commands.guild_only()
