@@ -15,8 +15,12 @@ class PlayerDatabase:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     async def init_db(self, auto_migrate: bool = True):
-        """Initializes SQLite database and tables."""
+        """Initializes SQLite database and tables with auto-migration for new columns."""
         async with aiosqlite.connect(self.db_path) as db:
+            # WAL mode for concurrency safety without locks
+            await db.execute('PRAGMA journal_mode=WAL;')
+            await db.execute('PRAGMA synchronous=NORMAL;')
+
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS players (
                     fid TEXT PRIMARY KEY,
@@ -31,6 +35,21 @@ class PlayerDatabase:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Ensure all defined columns exist on pre-existing DB files
+            player_columns = {
+                "kid": "TEXT NOT NULL DEFAULT '278'",
+                "name": "TEXT",
+                "alliance": "TEXT",
+                "discord_id": "INTEGER",
+                "status": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+                "warning_count": "INTEGER NOT NULL DEFAULT 0",
+                "warning_reason": "TEXT",
+                "created_at": "TIMESTAMP",
+                "updated_at": "TIMESTAMP",
+            }
+            await self._ensure_columns(db, "players", player_columns)
+
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_status ON players(status)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_kid ON players(kid)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_players_alliance ON players(alliance)')
@@ -44,12 +63,29 @@ class PlayerDatabase:
                     total_attempted INTEGER DEFAULT 0
                 )
             ''')
+
+            redeemed_columns = {
+                "redeemed_at": "TIMESTAMP",
+                "redeemed_by": "INTEGER",
+                "success_count": "INTEGER DEFAULT 0",
+                "total_attempted": "INTEGER DEFAULT 0",
+            }
+            await self._ensure_columns(db, "redeemed_codes", redeemed_columns)
+
             await db.commit()
 
         # Check if tables are empty, if so attempt migrations
         if auto_migrate:
             await self._auto_migrate_if_empty()
             await self._auto_migrate_redeemed_codes()
+
+    async def _ensure_columns(self, db, table_name: str, expected_columns: Dict[str, str]):
+        """Dynamically alters table to add any newly added columns if table already existed."""
+        cursor = await db.execute(f"PRAGMA table_info({table_name})")
+        existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col_name, col_def in expected_columns.items():
+            if col_name not in existing_cols:
+                await db.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
 
     async def _auto_migrate_if_empty(self):
         """Migrates from playerIDs.txt if the database table has 0 rows."""

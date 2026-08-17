@@ -348,6 +348,27 @@ class TestPlayerDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertIn("fid,kid,name,alliance", csv_str)
             self.assertIn("5001,278,Exporter,VIP", csv_str)
 
+    async def test_dynamic_column_migration(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_migration.db")
+            import sqlite3
+            # Create old schema table missing new columns
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE players (fid TEXT PRIMARY KEY, kid TEXT, name TEXT)")
+                conn.execute("INSERT INTO players (fid, kid, name) VALUES ('777', '278', 'LegacyPlayer')")
+                conn.commit()
+
+            # Init DB should auto-migrate missing columns (alliance, discord_id, status, warning_count, etc.)
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            player = await db.get_player("777")
+            self.assertIsNotNone(player)
+            self.assertEqual(player["name"], "LegacyPlayer")
+            self.assertEqual(player["status"], "ACTIVE")
+            self.assertEqual(player["warning_count"], 0)
+
+
 
 class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
     async def test_wyr_database_lifecycle(self):
