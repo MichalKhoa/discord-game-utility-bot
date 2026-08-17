@@ -228,7 +228,15 @@ class TestCodeDetector(unittest.TestCase):
         self.assertIn(1374888701204758599, WATCHED_CHANNELS)
 
     def test_extract_candidate_codes_all_formats(self):
-        # Format 1: Gift Code: XYZ
+        # Format 1: 🎁 Gift Code: OFFICIALSTORE08011
+        t_official = "🎁 Gift Code: OFFICIALSTORE08011 \nHave a great weekend!"
+        self.assertEqual(extract_candidate_codes(t_official), ["OFFICIALSTORE08011"])
+
+        # Format 1b: 🎁 **Gift Code:** OFFICIALSTORE08011
+        t_bold = "🎁 **Gift Code:** OFFICIALSTORE08011"
+        self.assertEqual(extract_candidate_codes(t_bold), ["OFFICIALSTORE08011"])
+
+        # Format 1c: Gift Code: **KINGSHOT2026**
         t1 = "Gift Code: **KINGSHOT2026**\nClaim before August!"
         self.assertEqual(extract_candidate_codes(t1), ["KINGSHOT2026"])
 

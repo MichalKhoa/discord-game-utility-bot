@@ -18,9 +18,8 @@ IGNORED_WORDS: Set[str] = {
     "NEWEST", "LATEST", "ACTIVE", "FOLLOW", "COMMUNITY", "SURVEY", "WINNER"
 }
 
-# Regex patterns for finding gift codes in announcements
 EXPLICIT_PATTERNS = [
-    r"(?:gift\s*code|cdk|code|coupon)\s*(?:[:=\-–—>]|\bis\b|\bhere\b)\s*[`\*\_]*([A-Za-z0-9_]{5,30})[`\*\_]*",
+    r"(?:gift\s*code|cdk|code|coupon)[^\w\n]*?(?:[:=\-–—>]|\bis\b|\bhere\b)[^\w\n]*?([A-Za-z0-9_]{5,30})",
     r"(?:gift\s*code|cdk|code|coupon)\s*:\s*[`\*\_]*([A-Za-z0-9_]{5,30})",
     r">>\s*([A-Za-z0-9_]{5,30})\s*<<",
     r"`([A-Za-z0-9_]{5,30})`",
