@@ -240,43 +240,53 @@ class GoogleSheetMenuButtons(discord.ui.View):
 
     @discord.ui.button(label="Export to Sheet", style=discord.ButtonStyle.success, emoji="📤", row=0)
     async def export_sheet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         cog = self.bot.get_cog("BackupSyncCog")
         if cog:
-            await cog.sheet_export_cmd(interaction)
+            await cog.do_export_sheet(interaction)
         else:
-            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+            await interaction.followup.send("❌ `BackupSync` module not loaded. Check bot logs.", ephemeral=True)
 
     @discord.ui.button(label="Pull from Sheet", style=discord.ButtonStyle.primary, emoji="📥", row=0)
     async def pull_sheet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         cog = self.bot.get_cog("BackupSyncCog")
         if cog:
-            await cog.sheet_pull_cmd(interaction)
+            await cog.do_pull_sheet(interaction)
         else:
-            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+            await interaction.followup.send("❌ `BackupSync` module not loaded. Check bot logs.", ephemeral=True)
 
     @discord.ui.button(label="Sync Google Doc", style=discord.ButtonStyle.secondary, emoji="📄", row=0)
     async def sync_doc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         pm_cog = self.bot.get_cog("PlayerManager")
         if pm_cog:
             await pm_cog.sync_doc_cmd(interaction)
         else:
-            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+            await interaction.followup.send("❌ `PlayerManager` module not loaded.", ephemeral=True)
 
     @discord.ui.button(label="Backup DB Now", style=discord.ButtonStyle.primary, emoji="💾", row=1)
     async def backup_now_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         cog = self.bot.get_cog("BackupSyncCog")
         if cog:
-            await cog.backup_now_cmd(interaction)
+            await cog.do_backup_now(interaction)
         else:
-            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+            await interaction.followup.send("❌ `BackupSync` module not loaded. Check bot logs.", ephemeral=True)
 
     @discord.ui.button(label="Sheet Status", style=discord.ButtonStyle.secondary, emoji="🔗", row=1)
     async def sheet_status_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         cog = self.bot.get_cog("BackupSyncCog")
         if cog:
-            await cog.sheet_status_cmd(interaction)
+            await cog.do_sheet_status(interaction)
         else:
-            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+            await interaction.followup.send("❌ `BackupSync` module not loaded. Check bot logs.", ephemeral=True)
 
     @discord.ui.button(label="Return to Players", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
     async def return_to_players(self, interaction: discord.Interaction, button: discord.ui.Button):

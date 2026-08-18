@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import sqlite3
 import datetime
@@ -177,7 +177,10 @@ def export_players_to_sheet(
     if not creds:
         raise ValueError("Google Service Account credentials not configured or invalid.")
 
-    import gspread
+    try:
+        import gspread
+    except ImportError:
+        raise ImportError("Python package 'gspread' is not installed. Please install requirements or rebuild Docker container.")
 
     target_sheet_id = (sheet_id or get_sheet_id()).strip()
     client = gspread.authorize(creds)
@@ -229,7 +232,10 @@ def import_players_from_sheet(sheet_id: Optional[str] = None) -> Dict[str, Any]:
     if not creds:
         raise ValueError("Google Service Account credentials not configured or invalid.")
 
-    import gspread
+    try:
+        import gspread
+    except ImportError:
+        raise ImportError("Python package 'gspread' is not installed. Please install requirements or rebuild Docker container.")
 
     target_sheet_id = (sheet_id or get_sheet_id()).strip()
     client = gspread.authorize(creds)

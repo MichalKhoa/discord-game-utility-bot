@@ -53,7 +53,6 @@ class BackupSyncCog(commands.Cog):
             players = await self.db.get_all_players()
             status_parts = [f"Local Snapshot ({file_size_kb:.1f} KB)"]
 
-            # Post backup file to Discord Backup Channel if configured
             channel = await self.get_backup_channel()
             if channel:
                 embed = discord.Embed(
@@ -84,29 +83,11 @@ class BackupSyncCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     # ==========================================
-    # /backup Command Group
+    # Core Logic Methods (Callable by slash & buttons)
     # ==========================================
-    backup_group = app_commands.Group(name="backup", description="Database backup and archive management")
-
-    @backup_group.command(name="set-channel", description="Set the Discord channel for automated and manual database backups")
-    @app_commands.describe(channel="The text channel where database backup files should be posted")
-    async def backup_set_channel_cmd(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        await interaction.response.defer(ephemeral=True)
-        await self.db.set_setting("backup_channel_id", str(channel.id))
-
-        embed = discord.Embed(
-            title="✅ Backup Channel Configured",
-            description=f"Automated daily backups and /backup now will post .db snapshots to {channel.mention}.",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Channel Name", value=f"#{channel.name}", inline=True)
-        embed.add_field(name="Channel ID", value=f"{channel.id}", inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @backup_group.command(name="now", description="Trigger an immediate database backup and upload .db file to Discord")
-    @app_commands.describe(channel="Optional target channel to post the backup file to")
-    async def backup_now_cmd(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
-        await interaction.response.defer(thinking=True)
+    async def do_backup_now(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
 
         db_path = self.db.db_path
         if not os.path.exists(db_path):
@@ -119,7 +100,6 @@ class BackupSyncCog(commands.Cog):
             file_size_kb = os.path.getsize(local_backup_file) / 1024.0
             players = await self.db.get_all_players()
 
-            # Target channel priority: argument > configured setting > interaction channel
             target_channel = channel or await self.get_backup_channel() or interaction.channel
 
             embed = discord.Embed(
@@ -149,6 +129,139 @@ class BackupSyncCog(commands.Cog):
         except Exception as e:
             self.last_backup_status = f"Failed: {e}"
             await interaction.followup.send(f"❌ Backup failed with error: {e}", ephemeral=True)
+
+    async def do_export_sheet(self, interaction: discord.Interaction, sheet_id: Optional[str] = None):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+
+        try:
+            creds = google_sync.get_google_credentials()
+            if not creds:
+                await interaction.followup.send(
+                    "❌ Google Service Account not configured.\nPlace service-account.json in project root or set GOOGLE_SERVICE_ACCOUNT_JSON.",
+                    ephemeral=True
+                )
+                return
+
+            players = await self.db.get_all_players()
+            if not players:
+                await interaction.followup.send("⚠️ No players found in the database to export.", ephemeral=True)
+                return
+
+            target_id = sheet_id or google_sync.get_sheet_id()
+            res = await asyncio.to_thread(google_sync.export_players_to_sheet, players, target_id)
+
+            embed = discord.Embed(
+                title="📊 Google Sheet Export Complete",
+                description=f"Exported **{res['total_exported']}** player records to Google Sheet.",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Spreadsheet", value=f"[{res['spreadsheet_title']}]({res['spreadsheet_url']})", inline=False)
+            embed.add_field(name="Sheet ID", value=f"{target_id}", inline=False)
+            embed.set_footer(text="You can now edit rows directly in Google Sheets, then run /sheet pull to sync back.")
+
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Google Sheet export failed: {e}", ephemeral=True)
+
+    async def do_pull_sheet(self, interaction: discord.Interaction, sheet_id: Optional[str] = None):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+
+        try:
+            creds = google_sync.get_google_credentials()
+            if not creds:
+                await interaction.followup.send(
+                    "❌ Google Service Account not configured.\nPlace service-account.json in project root or set GOOGLE_SERVICE_ACCOUNT_JSON.",
+                    ephemeral=True
+                )
+                return
+
+            target_id = sheet_id or google_sync.get_sheet_id()
+            import_res = await asyncio.to_thread(google_sync.import_players_from_sheet, target_id)
+
+            valid_players = import_res.get("valid_players", [])
+            skipped_rows = import_res.get("skipped_rows", [])
+
+            if not valid_players and not skipped_rows:
+                await interaction.followup.send("⚠️ Google Sheet appears to be empty or missing data rows.", ephemeral=True)
+                return
+
+            updated_count = await self.db.bulk_upsert_players(valid_players)
+
+            embed = discord.Embed(
+                title="🔄 Google Sheet Sync Complete",
+                description=f"Synchronized database with [{import_res.get('spreadsheet_title', 'Google Sheet')}]({import_res.get('spreadsheet_url', '#')}).",
+                color=discord.Color.green() if not skipped_rows else discord.Color.gold()
+            )
+            embed.add_field(name="Total Rows Read", value=str(import_res.get("total_read", 0)), inline=True)
+            embed.add_field(name="Synced Players", value=str(updated_count), inline=True)
+            embed.add_field(name="Invalid Rows Skipped", value=str(len(skipped_rows)), inline=True)
+
+            if skipped_rows:
+                skip_details = "\n".join(f"• Row {s['row']}: {s['reason']}" for s in skipped_rows[:8])
+                if len(skipped_rows) > 8:
+                    skip_details += f"\n...and {len(skipped_rows) - 8} more"
+                embed.add_field(name="Skipped Row Details", value=skip_details, inline=False)
+
+            embed.set_footer(text="Run /player sync-names to verify in-game names for any new IDs added.")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Google Sheet pull failed: {e}", ephemeral=True)
+
+    async def do_sheet_status(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        creds = google_sync.get_google_credentials()
+        sheet_id = google_sync.get_sheet_id()
+
+        embed = discord.Embed(
+            title="🔗 Google Sheet Integration Status",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Credentials Status",
+            value="🟢 Connected" if creds else "🔴 Not Configured (service-account.json missing)",
+            inline=False
+        )
+        if creds and hasattr(creds, 'service_account_email'):
+            embed.add_field(name="Service Account Email", value=f"{creds.service_account_email}", inline=False)
+
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        embed.add_field(name="Google Sheet", value=f"[{sheet_id}]({sheet_url})", inline=False)
+
+        backup_channel = await self.get_backup_channel()
+        channel_str = f"{backup_channel.mention}" if backup_channel else "None configured (/backup set-channel)"
+        embed.add_field(name="Discord Backup Channel", value=channel_str, inline=False)
+        embed.add_field(name="Daily Auto-Backup", value=f"🟢 Active ({self.last_backup_status})", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ==========================================
+    # /backup Command Group
+    # ==========================================
+    backup_group = app_commands.Group(name="backup", description="Database backup and archive management")
+
+    @backup_group.command(name="set-channel", description="Set the Discord channel for automated and manual database backups")
+    @app_commands.describe(channel="The text channel where database backup files should be posted")
+    async def backup_set_channel_cmd(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        await self.db.set_setting("backup_channel_id", str(channel.id))
+
+        embed = discord.Embed(
+            title="✅ Backup Channel Configured",
+            description=f"Automated daily backups and /backup now will post .db snapshots to {channel.mention}.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Channel Name", value=f"#{channel.name}", inline=True)
+        embed.add_field(name="Channel ID", value=f"{channel.id}", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @backup_group.command(name="now", description="Trigger an immediate database backup and upload .db file to Discord")
+    @app_commands.describe(channel="Optional target channel to post the backup file to")
+    async def backup_now_cmd(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        await self.do_backup_now(interaction, channel)
 
     @backup_group.command(name="list", description="List local database backups and backup health")
     async def backup_list_cmd(self, interaction: discord.Interaction):
@@ -194,112 +307,16 @@ class BackupSyncCog(commands.Cog):
     @sheet_group.command(name="export", description="Export all players from SQLite database to Google Sheet")
     @app_commands.describe(sheet_id="Optional Google Sheet ID override")
     async def sheet_export_cmd(self, interaction: discord.Interaction, sheet_id: Optional[str] = None):
-        await interaction.response.defer(thinking=True)
-
-        try:
-            creds = google_sync.get_google_credentials()
-            if not creds:
-                await interaction.followup.send(
-                    "❌ Google Service Account not configured. Place service-account.json in project root or set GOOGLE_SERVICE_ACCOUNT_JSON.",
-                    ephemeral=True
-                )
-                return
-
-            players = await self.db.get_all_players()
-            if not players:
-                await interaction.followup.send("⚠️ No players found in the database to export.", ephemeral=True)
-                return
-
-            target_id = sheet_id or google_sync.get_sheet_id()
-            res = await asyncio.to_thread(google_sync.export_players_to_sheet, players, target_id)
-
-            embed = discord.Embed(
-                title="📊 Google Sheet Export Complete",
-                description=f"Exported **{res['total_exported']}** player records to Google Sheet.",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="Spreadsheet", value=f"[{res['spreadsheet_title']}]({res['spreadsheet_url']})", inline=False)
-            embed.add_field(name="Sheet ID", value=f"{target_id}", inline=False)
-            embed.set_footer(text="You can now edit rows directly in Google Sheets, then run /sheet pull to sync back.")
-
-            await interaction.followup.send(embed=embed)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Google Sheet export failed: {e}", ephemeral=True)
+        await self.do_export_sheet(interaction, sheet_id)
 
     @sheet_group.command(name="pull", description="Import edits made in Google Sheet back into the SQLite database")
     @app_commands.describe(sheet_id="Optional Google Sheet ID override")
     async def sheet_pull_cmd(self, interaction: discord.Interaction, sheet_id: Optional[str] = None):
-        await interaction.response.defer(thinking=True)
-
-        try:
-            creds = google_sync.get_google_credentials()
-            if not creds:
-                await interaction.followup.send(
-                    "❌ Google Service Account not configured. Place service-account.json in project root or set GOOGLE_SERVICE_ACCOUNT_JSON.",
-                    ephemeral=True
-                )
-                return
-
-            target_id = sheet_id or google_sync.get_sheet_id()
-            import_res = await asyncio.to_thread(google_sync.import_players_from_sheet, target_id)
-
-            valid_players = import_res.get("valid_players", [])
-            skipped_rows = import_res.get("skipped_rows", [])
-
-            if not valid_players and not skipped_rows:
-                await interaction.followup.send("⚠️ Google Sheet appears to be empty or missing data rows.", ephemeral=True)
-                return
-
-            updated_count = await self.db.bulk_upsert_players(valid_players)
-
-            embed = discord.Embed(
-                title="🔄 Google Sheet Sync Complete",
-                description=f"Synchronized database with [{import_res.get('spreadsheet_title', 'Google Sheet')}]({import_res.get('spreadsheet_url', '#')}).",
-                color=discord.Color.green() if not skipped_rows else discord.Color.gold()
-            )
-            embed.add_field(name="Total Rows Read", value=str(import_res.get("total_read", 0)), inline=True)
-            embed.add_field(name="Synced Players", value=str(updated_count), inline=True)
-            embed.add_field(name="Invalid Rows Skipped", value=str(len(skipped_rows)), inline=True)
-
-            if skipped_rows:
-                skip_details = "\n".join(f"• Row {s['row']}: {s['reason']}" for s in skipped_rows[:8])
-                if len(skipped_rows) > 8:
-                    skip_details += f"\n...and {len(skipped_rows) - 8} more"
-                embed.add_field(name="Skipped Row Details", value=skip_details, inline=False)
-
-            embed.set_footer(text="Run /player sync-names to verify in-game names for any new IDs added.")
-            await interaction.followup.send(embed=embed)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Google Sheet pull failed: {e}", ephemeral=True)
+        await self.do_pull_sheet(interaction, sheet_id)
 
     @sheet_group.command(name="status", description="Show Google Sheet connection details")
     async def sheet_status_cmd(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        creds = google_sync.get_google_credentials()
-        sheet_id = google_sync.get_sheet_id()
-
-        embed = discord.Embed(
-            title="🔗 Google Sheet Integration Status",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="Credentials Status",
-            value="🟢 Connected" if creds else "🔴 Not Configured (service-account.json missing)",
-            inline=False
-        )
-        if creds and hasattr(creds, 'service_account_email'):
-            embed.add_field(name="Service Account Email", value=f"{creds.service_account_email}", inline=False)
-
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-        embed.add_field(name="Google Sheet", value=f"[{sheet_id}]({sheet_url})", inline=False)
-
-        backup_channel = await self.get_backup_channel()
-        channel_str = f"{backup_channel.mention}" if backup_channel else "None configured (/backup set-channel)"
-        embed.add_field(name="Discord Backup Channel", value=channel_str, inline=False)
-        embed.add_field(name="Daily Auto-Backup", value=f"🟢 Active ({self.last_backup_status})", inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await self.do_sheet_status(interaction)
 
 
 async def setup(bot: commands.Bot):
