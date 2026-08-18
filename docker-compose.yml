@@ -19,6 +19,8 @@ services:
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN:-}
       - GOOGLE_SERVICE_ACCOUNT_JSON=${GOOGLE_SERVICE_ACCOUNT_JSON:-}
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-1_OU5Dt7bhczgaJ8UOndF6B4qIGxTGLJ5}
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID:-1OST7SFBUbdnpV2Gun0-Xc49dCF1W1c3oE9C5wAwjC7c}
 
     volumes:
       # PORTAINER NOTE: Relative paths (like './audio') are resolved relative to Portainer's
