@@ -197,11 +197,110 @@ class PlayerMenuButtons(discord.ui.View):
         else:
             await interaction.response.send_message("PlayerManager module error", ephemeral=True)
 
+    @discord.ui.button(label="Google Sheet & Backup", style=discord.ButtonStyle.success, emoji="📊", row=2)
+    async def sheet_menu_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="📊 Google Sheets & Database Backup",
+            description="Sync player rosters with Google Sheets/Docs and manage database backups.",
+            colour=discord.Colour.green()
+        )
+        embed.add_field(
+            name="📤 Export to Sheet",
+            value="> Overwrites Google Sheet with current player database.",
+            inline=False
+        )
+        embed.add_field(
+            name="📥 Pull from Sheet",
+            value="> Reads edits from Google Sheet and updates database.",
+            inline=False
+        )
+        embed.add_field(
+            name="📄 Sync Google Doc",
+            value="> Imports raw player list from Google Doc URL.",
+            inline=False
+        )
+        embed.add_field(
+            name="💾 Backup DB Now",
+            value="> Creates instant SQLite snapshot and posts to backup channel.",
+            inline=False
+        )
+        await interaction.response.edit_message(embed=embed, view=GoogleSheetMenuButtons(self.bot))
+
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
     async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class GoogleSheetMenuButtons(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=43200)
+        self.bot = bot
+
+    @discord.ui.button(label="Export to Sheet", style=discord.ButtonStyle.success, emoji="📤", row=0)
+    async def export_sheet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("BackupSyncCog")
+        if cog:
+            await cog.sheet_export_cmd(interaction)
+        else:
+            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+
+    @discord.ui.button(label="Pull from Sheet", style=discord.ButtonStyle.primary, emoji="📥", row=0)
+    async def pull_sheet_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("BackupSyncCog")
+        if cog:
+            await cog.sheet_pull_cmd(interaction)
+        else:
+            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+
+    @discord.ui.button(label="Sync Google Doc", style=discord.ButtonStyle.secondary, emoji="📄", row=0)
+    async def sync_doc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pm_cog = self.bot.get_cog("PlayerManager")
+        if pm_cog:
+            await pm_cog.sync_doc_cmd(interaction)
+        else:
+            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+
+    @discord.ui.button(label="Backup DB Now", style=discord.ButtonStyle.primary, emoji="💾", row=1)
+    async def backup_now_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("BackupSyncCog")
+        if cog:
+            await cog.backup_now_cmd(interaction)
+        else:
+            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+
+    @discord.ui.button(label="Sheet Status", style=discord.ButtonStyle.secondary, emoji="🔗", row=1)
+    async def sheet_status_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = self.bot.get_cog("BackupSyncCog")
+        if cog:
+            await cog.sheet_status_cmd(interaction)
+        else:
+            await interaction.response.send_message("BackupSync module error", ephemeral=True)
+
+    @discord.ui.button(label="Return to Players", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
+    async def return_to_players(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player_menu_panel = discord.Embed(
+            title="👥 Player Registry & Management",
+            description="Manage game player accounts, kingdom IDs, and warning flags.",
+            colour=discord.Colour.teal()
+        )
+        player_menu_panel.add_field(
+            name="📋 View Player List",
+            value="> Browse all registered players with pagination and filters.",
+            inline=False
+        )
+        player_menu_panel.add_field(
+            name="➕ Add / 📝 Batch Import / 🔍 Search & Edit",
+            value="> Register single players, paste multi-line batches, or search/edit.",
+            inline=False
+        )
+        player_menu_panel.add_field(
+            name="⚠️ Flagged / 📊 Stats / 📥 Export",
+            value="> Review problematic accounts, kingdom stats, or download CSV.",
+            inline=False
+        )
+        await interaction.response.edit_message(embed=player_menu_panel, view=PlayerMenuButtons(self.bot))
 
 
 class UtilityMenuButtons(discord.ui.View):
