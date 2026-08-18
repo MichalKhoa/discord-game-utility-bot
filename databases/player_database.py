@@ -72,6 +72,14 @@ class PlayerDatabase:
             }
             await self._ensure_columns(db, "redeemed_codes", redeemed_columns)
 
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             await db.commit()
 
         # Check if tables are empty, if so attempt migrations
@@ -640,5 +648,23 @@ class PlayerDatabase:
             cursor = await db.execute(query, params)
             await db.commit()
             return cursor.rowcount
+
+    async def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Gets a bot configuration setting by key."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute('SELECT value FROM bot_settings WHERE key = ?', (key,))
+            row = await cursor.fetchone()
+            return row[0] if row else default
+
+    async def set_setting(self, key: str, value: str) -> bool:
+        """Sets or updates a bot configuration setting."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            ''', (key, str(value)))
+            await db.commit()
+        return True
 
 
