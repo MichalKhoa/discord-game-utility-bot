@@ -160,6 +160,9 @@ async def process_announcement_message(message: discord.Message, bot: discord.Cl
             unredeemed_found.append(code)
             embed = create_detected_code_embed(code, message)
             view = DetectedCodeView(code, bot)
-            await message.channel.send(embed=embed, view=view)
+            try:
+                await message.channel.send(embed=embed, view=view)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                print(f"DEBUG: Failed to send detected code embed to channel {message.channel.id}: {e}")
 
     return unredeemed_found

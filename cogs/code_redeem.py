@@ -7,6 +7,7 @@ import utils.redeem_code
 import utils.code_detector
 
 import asyncio
+import threading
 import datetime
 import os
 import aiohttp
@@ -102,12 +103,86 @@ class ConfirmRedeemView(discord.ui.View):
             await self.on_cancel(interaction)
 
 
+class ConfirmAbortModal(discord.ui.Modal, title="🛑 Confirm Abort Redemption"):
+    confirmation = discord.ui.TextInput(
+        label="Type 'ABORT' to confirm stopping",
+        placeholder="ABORT",
+        required=True,
+        max_length=10,
+        style=discord.TextStyle.short
+    )
+    reason = discord.ui.TextInput(
+        label="Reason for stopping (Optional)",
+        placeholder="e.g. wrong code or pausing",
+        required=False,
+        max_length=100,
+        style=discord.TextStyle.short
+    )
+
+    def __init__(self, on_confirm):
+        super().__init__()
+        self.on_confirm = on_confirm
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if self.confirmation.value.strip().upper() != "ABORT":
+            await interaction.response.send_message(
+                "❌ Abort cancelled: You must type `ABORT` in the confirmation box.",
+                ephemeral=True
+            )
+            return
+
+        reason_str = self.reason.value.strip() if self.reason.value else None
+        await self.on_confirm(interaction, reason=reason_str)
+
+
+class BatchProgressView(discord.ui.View):
+    """View with a button to open abort confirmation modal."""
+    def __init__(self, author_id: int, on_stop):
+        super().__init__(timeout=7200)
+        self.author_id = author_id
+        self.on_stop = on_stop
+
+    @discord.ui.button(label="Stop Redemption", style=discord.ButtonStyle.danger, emoji="🛑")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_owner = await interaction.client.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if interaction.user.id != self.author_id and not (is_owner or is_admin):
+            await interaction.response.send_message("❌ Only the command author or server admins can stop this redemption.", ephemeral=True)
+            return
+
+        async def handle_modal_confirm(modal_interaction: discord.Interaction, reason: Optional[str] = None):
+            button.disabled = True
+            button.label = "Stopping..."
+            try:
+                if interaction.message:
+                    await interaction.message.edit(view=self)
+            except Exception:
+                pass
+            await self.on_stop(modal_interaction, reason=reason)
+
+        modal = ConfirmAbortModal(on_confirm=handle_modal_confirm)
+        await interaction.response.send_modal(modal)
+
+
 class CodeRedeem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = PlayerDatabase()
         self.redeem_lock = asyncio.Lock()
         self.running_tasks = set()
+        self.current_cancel_event: Optional[threading.Event] = None
+        self.active_author_id: Optional[int] = None
+        self.stopped_by_user: Optional[discord.abc.User] = None
+        self.stop_reason: Optional[str] = None
+
+    def stop_current_redemption(self, user: Optional[discord.abc.User] = None, reason: Optional[str] = None) -> bool:
+        """Signals active batch redemption to abort."""
+        if self.current_cancel_event and not self.current_cancel_event.is_set():
+            self.stopped_by_user = user
+            self.stop_reason = reason
+            self.current_cancel_event.set()
+            return True
+        return False
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -123,6 +198,29 @@ class CodeRedeem(commands.Cog):
     @app_commands.describe(gift_code="The code(s) you want to redeem, separated by ;")
     async def redeem(self, interaction: discord.Interaction, gift_code: str):
         await self.redeem_code_for_all(interaction, gift_code)
+
+    @app_commands.command(name="redeem-stop", description="Stop the currently active batch redemption process")
+    async def stop_redeem_cmd(self, interaction: discord.Interaction):
+        if not self.redeem_lock.locked() or not self.current_cancel_event:
+            await interaction.response.send_message("ℹ️ No batch redemption is currently running.", ephemeral=True)
+            return
+
+        is_owner = await self.bot.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if interaction.user.id != self.active_author_id and not (is_owner or is_admin):
+            await interaction.response.send_message("❌ Only the command author or server admins can stop this redemption.", ephemeral=True)
+            return
+
+        async def handle_modal_confirm(modal_interaction: discord.Interaction, reason: Optional[str] = None):
+            stopped = self.stop_current_redemption(user=modal_interaction.user, reason=reason)
+            reason_msg = f" (Reason: `{reason}`)" if reason else ""
+            if stopped:
+                await modal_interaction.response.send_message(f"🛑 Batch redemption is being stopped by {modal_interaction.user.mention}{reason_msg}...")
+            else:
+                await modal_interaction.response.send_message("ℹ️ Redemption is already stopping or finished.", ephemeral=True)
+
+        modal = ConfirmAbortModal(on_confirm=handle_modal_confirm)
+        await interaction.response.send_modal(modal)
 
     @app_commands.command(name="redeem-for-player", description="Redeem codes (separated by ;) for a single player ID!")
     @app_commands.describe(
@@ -252,9 +350,10 @@ class CodeRedeem(commands.Cog):
         channel: discord.abc.Messageable,
         content: Optional[str] = None,
         embed: Optional[discord.Embed] = None,
-        bot_name: str = "GiftCodeRedeemBot"
+        bot_name: str = "GiftCodeRedeemBot",
+        user_id: Optional[int] = None
     ):
-        """Attempts sending via channel webhook for custom bot identity; gracefully falls back to channel.send()."""
+        """Attempts sending via channel webhook for custom bot identity; gracefully falls back to channel.send() and DM."""
         if hasattr(channel, "create_webhook") and not isinstance(channel, (discord.DMChannel, discord.GroupChannel)):
             try:
                 webhook = None
@@ -280,13 +379,43 @@ class CodeRedeem(commands.Cog):
                 print(f"DEBUG: Webhook delivery failed ({wh_err}), falling back to direct channel message.")
 
         # Fallback to direct channel send
-        await channel.send(content=content, embed=embed)
+        try:
+            await channel.send(content=content, embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as pe:
+            print(f"DEBUG: Channel send failed ({pe}).")
+            if user_id:
+                try:
+                    user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+                    if user:
+                        await user.send(content=content, embed=embed)
+                except Exception as dm_err:
+                    print(f"DEBUG: DM delivery failed ({dm_err}).")
 
-    async def run_redeem(self, channel: discord.abc.Messageable, gift_codes: List[str], user_id: int):
+    async def run_redeem(
+        self,
+        channel: discord.abc.Messageable,
+        gift_codes: List[str],
+        user_id: int,
+        interaction: Optional[discord.Interaction] = None
+    ):
         print(f"DEBUG: Starting run_redeem for {gift_codes}")
         async with self.redeem_lock:
             print("DEBUG: Acquired lock")
+            self.current_cancel_event = threading.Event()
+            self.active_author_id = user_id
+            self.stopped_by_user = None
             progress_msg = None
+
+            async def handle_stop(btn_interaction: discord.Interaction, reason: Optional[str] = None):
+                stopped = self.stop_current_redemption(user=btn_interaction.user, reason=reason)
+                reason_msg = f" (Reason: `{reason}`)" if reason else ""
+                if stopped:
+                    await btn_interaction.response.send_message(f"🛑 Stopping batch redemption{reason_msg}...", ephemeral=True)
+                else:
+                    await btn_interaction.response.send_message("ℹ️ Redemption is already stopping or finished.", ephemeral=True)
+
+            progress_view = BatchProgressView(author_id=user_id, on_stop=handle_stop)
+
             try:
                 await self.db.init_db()
 
@@ -295,10 +424,26 @@ class CodeRedeem(commands.Cog):
                     description=f"Preparing to redeem `{', '.join(gift_codes)}`...",
                     colour=discord.Colour.gold()
                 )
-                progress_msg = await channel.send(embed=init_embed)
+
+                if interaction:
+                    try:
+                        progress_msg = await interaction.followup.send(embed=init_embed, view=progress_view, wait=True)
+                    except Exception as ie:
+                        print(f"DEBUG: Interaction followup send failed ({ie}), trying channel.send")
+
+                if progress_msg is None:
+                    try:
+                        progress_msg = await channel.send(embed=init_embed, view=progress_view)
+                    except (discord.Forbidden, discord.HTTPException) as pe:
+                        print(f"DEBUG: Channel send failed ({pe}), continuing batch redemption in background...")
 
                 results = []
+                was_cancelled = False
                 for idx, code in enumerate(gift_codes, start=1):
+                    if self.current_cancel_event.is_set():
+                        was_cancelled = True
+                        break
+
                     progress_state = {
                         "current_code": code,
                         "code_index": idx,
@@ -319,7 +464,7 @@ class CodeRedeem(commands.Cog):
                     async def update_display():
                         while not stop_updater.is_set():
                             try:
-                                if progress_state["total"] > 0:
+                                if progress_state["total"] > 0 and progress_msg:
                                     embed = build_batch_progress_embed(
                                         current_code=progress_state["current_code"],
                                         code_index=progress_state["code_index"],
@@ -329,10 +474,11 @@ class CodeRedeem(commands.Cog):
                                         counters=progress_state["counters"],
                                         elapsed=progress_state["elapsed"]
                                     )
-                                    if progress_msg:
-                                        await progress_msg.edit(embed=embed)
+                                    await progress_msg.edit(embed=embed, view=progress_view)
+                            except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
+                                print(f"DEBUG: Progress update notice: {e}")
                             except Exception as e:
-                                print(f"Progress update error: {e}")
+                                print(f"DEBUG: Progress update error: {e}")
                             await asyncio.sleep(4.0)
 
                     updater_task = asyncio.create_task(update_display())
@@ -344,33 +490,58 @@ class CodeRedeem(commands.Cog):
                             code,
                             LOCAL_PLAYER_IDS,
                             "278",
-                            on_progress
+                            on_progress,
+                            self.current_cancel_event
                         )
                         print(f"DEBUG: Finished redeem_for_all for {code}")
                         results.append(stats)
 
-                        if stats.startswith("✅") or stats.startswith("Giftcode"):
+                        if stats.startswith("✅") or stats.startswith("Giftcode") or stats.startswith("⏹️"):
                             await self.db.log_redeemed_code(code, redeemed_by=user_id)
+
+                        if self.current_cancel_event.is_set() or "⏹️" in stats:
+                            was_cancelled = True
+                            break
                     finally:
                         stop_updater.set()
                         updater_task.cancel()
 
+                # Disable button
+                for item in progress_view.children:
+                    item.disabled = True
+
                 # Build final summary embed
-                final_embed = discord.Embed(
-                    title="✅ Batch Redemption Completed!",
-                    colour=discord.Colour.green()
-                )
-                final_embed.description = "\n\n".join(results)
-                final_embed.set_footer(text="All player accounts processed successfully.")
+                if was_cancelled or self.current_cancel_event.is_set():
+                    stopped_by_str = f" by {self.stopped_by_user.mention}" if self.stopped_by_user else ""
+                    if self.stop_reason:
+                        stopped_by_str += f" (Reason: `{self.stop_reason}`)"
+                    final_embed = discord.Embed(
+                        title=f"🛑 Batch Redemption Stopped{stopped_by_str}",
+                        colour=discord.Colour.orange()
+                    )
+                    final_embed.description = "\n\n".join(results) or "Redemption was stopped before completion."
+                    final_embed.set_footer(text="Redemption stopped by user request.")
+                else:
+                    final_embed = discord.Embed(
+                        title="✅ Batch Redemption Completed!",
+                        colour=discord.Colour.green()
+                    )
+                    final_embed.description = "\n\n".join(results)
+                    final_embed.set_footer(text="All player accounts processed successfully.")
 
                 if progress_msg:
-                    await progress_msg.edit(embed=final_embed)
+                    try:
+                        await progress_msg.edit(embed=final_embed, view=progress_view)
+                    except Exception:
+                        await self.send_with_webhook_fallback(channel, embed=final_embed, user_id=user_id)
                 else:
-                    await self.send_with_webhook_fallback(channel, embed=final_embed)
+                    await self.send_with_webhook_fallback(channel, embed=final_embed, user_id=user_id)
 
+                status_word = "stopped" if (was_cancelled or self.current_cancel_event.is_set()) else "finished"
                 await self.send_with_webhook_fallback(
                     channel,
-                    content=f"<@{user_id}> ✅ Finished redeeming gift code(s): `{', '.join(gift_codes)}`!"
+                    content=f"<@{user_id}> 📢 Batch redemption for `{', '.join(gift_codes)}` {status_word}!",
+                    user_id=user_id
                 )
 
             except Exception as e:
@@ -383,9 +554,17 @@ class CodeRedeem(commands.Cog):
                     colour=discord.Colour.red()
                 )
                 if progress_msg:
-                    await progress_msg.edit(embed=err_embed)
+                    try:
+                        await progress_msg.edit(embed=err_embed, view=None)
+                    except Exception:
+                        await self.send_with_webhook_fallback(channel, embed=err_embed, user_id=user_id)
                 else:
-                    await self.send_with_webhook_fallback(channel, embed=err_embed)
+                    await self.send_with_webhook_fallback(channel, embed=err_embed, user_id=user_id)
+            finally:
+                self.current_cancel_event = None
+                self.active_author_id = None
+                self.stopped_by_user = None
+                self.stop_reason = None
 
     async def _execute_batch_redemption(self, interaction: discord.Interaction, codes: List[str]):
         """Dispatches background redemption task after confirmation."""
@@ -393,17 +572,12 @@ class CodeRedeem(commands.Cog):
             await interaction.followup.send("⚠️ Another redemption is currently in progress. Please try again later!")
             return
 
-        await interaction.followup.send(
-            f"🔢 Initiating redemption for `{', '.join(codes)}`.\n"
-            f"Live progress updates will appear below and you will be pinged when finished."
-        )
-
         try:
             channel = interaction.channel
             if channel is None:
                 channel = await self.bot.fetch_channel(interaction.channel_id)
 
-            task = asyncio.create_task(self.run_redeem(channel, codes, interaction.user.id))
+            task = asyncio.create_task(self.run_redeem(channel, codes, interaction.user.id, interaction=interaction))
             self.running_tasks.add(task)
             task.add_done_callback(self.running_tasks.discard)
         except Exception as e:

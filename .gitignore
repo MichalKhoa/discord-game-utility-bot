@@ -25,3 +25,7 @@ token.txt
 service-account.json
 utils/service-account.json
 utils/playerIDs.txt
+
+# Codegraph index cache
+.codegraph/
+

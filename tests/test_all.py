@@ -556,5 +556,93 @@ class TestMenuViews(unittest.TestCase):
         self.assertGreaterEqual(len(v_util.children), 4)
 
 
+class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
+    async def test_run_redeem_handles_forbidden_channel_send(self):
+        from cogs.code_redeem import CodeRedeem
+        mock_bot = MagicMock()
+        mock_bot.get_user.return_value = None
+        mock_bot.fetch_user = AsyncMock(return_value=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cog = CodeRedeem(mock_bot)
+            cog.db = PlayerDatabase(os.path.join(tmpdir, "test_cog.db"))
+            await cog.db.init_db(auto_migrate=False)
+
+            # Mock channel where .send raises Forbidden
+            mock_channel = AsyncMock()
+            mock_channel.send.side_effect = discord.Forbidden(
+                response=MagicMock(status=403, reason="Forbidden"),
+                message="Missing Access"
+            )
+
+            # Patch redeem_for_all to return a success status string
+            with patch("utils.redeem_code.redeem_for_all", return_value="✅ Redeemed for 10 players"):
+                # run_redeem should complete gracefully without raising Forbidden
+                await cog.run_redeem(mock_channel, ["TESTCODE123"], 99999)
+
+            # Check that code was logged in database despite channel send failure
+            logged = await cog.db.is_code_redeemed("TESTCODE123")
+            self.assertIsNotNone(logged)
+
+    async def test_stop_current_redemption(self):
+        from cogs.code_redeem import CodeRedeem
+        mock_bot = MagicMock()
+        cog = CodeRedeem(mock_bot)
+        
+        # When not running, returns False
+        self.assertFalse(cog.stop_current_redemption())
+
+        # When event is set up
+        import threading
+        cog.current_cancel_event = threading.Event()
+        self.assertTrue(cog.stop_current_redemption())
+        self.assertTrue(cog.current_cancel_event.is_set())
+
+    def test_redeem_for_all_cancel_event(self):
+        from utils.redeem_code import redeem_for_all
+        import threading
+        cancel_evt = threading.Event()
+        cancel_evt.set()  # Cancel immediately
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_cancel.db")
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE players (fid TEXT PRIMARY KEY, kid TEXT, name TEXT, status TEXT DEFAULT 'ACTIVE')")
+            conn.execute("INSERT INTO players (fid, kid, name) VALUES ('111', '278', 'P1')")
+            conn.execute("INSERT INTO players (fid, kid, name) VALUES ('222', '278', 'P2')")
+            conn.commit()
+            conn.close()
+
+            result = redeem_for_all("CANCELCODE", file_path=db_path, cancel_event=cancel_evt)
+            self.assertIn("Process Cancelled by User", result)
+
+    async def test_confirm_abort_modal(self):
+        from cogs.code_redeem import ConfirmAbortModal
+        mock_on_confirm = AsyncMock()
+        modal = ConfirmAbortModal(on_confirm=mock_on_confirm)
+
+        # Test invalid confirmation input
+        mock_interaction_invalid = MagicMock()
+        mock_interaction_invalid.response = AsyncMock()
+        modal.confirmation._value = "no"
+        modal.reason._value = "testing"
+        await modal.on_submit(mock_interaction_invalid)
+        mock_interaction_invalid.response.send_message.assert_called_once()
+        self.assertIn("Abort cancelled", mock_interaction_invalid.response.send_message.call_args[0][0])
+        mock_on_confirm.assert_not_called()
+
+        # Test valid confirmation input
+        mock_interaction_valid = MagicMock()
+        mock_interaction_valid.response = AsyncMock()
+        modal.confirmation._value = "ABORT"
+        modal.reason._value = "wrong code"
+        await modal.on_submit(mock_interaction_valid)
+        mock_on_confirm.assert_called_once_with(mock_interaction_valid, reason="wrong code")
+
+
 if __name__ == '__main__':
     unittest.main()
+
+
+

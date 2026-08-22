@@ -508,9 +508,31 @@ def make_progress_bar(current: int, total: int, length: int = 15) -> str:
     return "█" * filled + "░" * (length - filled)
 
 
-def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM, progress_callback=None):
+def redeem_for_all(
+    giftCode: str,
+    file_path="data/players.db",
+    default_kingdom=DEFAULT_KINGDOM,
+    progress_callback=None,
+    cancel_event=None
+):
     start_time = perf_counter()
     start_time_CPU = process_time()
+
+    def is_cancelled() -> bool:
+        if cancel_event is None:
+            return False
+        if hasattr(cancel_event, "is_set"):
+            return cancel_event.is_set()
+        if callable(cancel_event):
+            return cancel_event()
+        return False
+
+    def interruptible_sleep(duration: float, step: float = 0.25):
+        target = time.time() + max(0.0, duration)
+        while time.time() < target:
+            if is_cancelled():
+                break
+            time.sleep(min(step, max(0.01, target - time.time())))
 
     try:
         players = load_players(file_path, default_kingdom)
@@ -551,6 +573,11 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
     next_burst_target = random.randint(15, 25)
 
     while len(processed_fids) < len(players) and not stop_processing:
+        if is_cancelled():
+            fatal_reason = "Cancelled by user"
+            stop_processing = True
+            break
+
         now = time.time()
         ready = [(fid, kid) for fid, kid in players
                  if fid not in processed_fids and retry_queue.get(fid, 0) <= now]
@@ -562,10 +589,15 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
             next_retry = min(retry_queue[fid] for fid, _ in players
                              if fid not in processed_fids and fid in retry_queue)
             wait = max(1, min(30, next_retry - now + 1))
-            time.sleep(wait)
+            interruptible_sleep(wait)
             continue
 
         for fid, kid in ready:
+            if is_cancelled():
+                fatal_reason = "Cancelled by user"
+                stop_processing = True
+                break
+
             # Pick proxy & consistent header for this request
             if proxy_pool:
                 current_proxy, current_headers = proxy_pool.get_proxy_and_headers()
@@ -574,6 +606,11 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
 
             status = "Processing error"
             for attempt in range(MAX_FID_ATTEMPTS):
+                if is_cancelled():
+                    fatal_reason = "Cancelled by user"
+                    stop_processing = True
+                    break
+
                 status = redeem_once(fid, kid, giftCode, headers=current_headers, proxy=current_proxy)
                 counters["requests"] += 1
 
@@ -583,14 +620,19 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
                     if current_proxy and proxy_pool:
                         proxy_pool.mark_cooldown(current_proxy, duration=60.0)
                     # Global IP backoff pause to prevent bans
-                    time.sleep(15)
+                    interruptible_sleep(15)
                     if cooldowns[fid] <= MAX_COOLDOWNS:
                         retry_queue[fid] = time.time() + TOO_FREQUENT_SLEEP
                         break
                 elif status == "TIMEOUT RETRY":
                     if attempt < MAX_FID_ATTEMPTS - 1:
-                        time.sleep(RETRY_DELAY * (attempt + 1))
+                        interruptible_sleep(RETRY_DELAY * (attempt + 1))
                         continue
+                break
+
+            if is_cancelled():
+                fatal_reason = "Cancelled by user"
+                stop_processing = True
                 break
 
             if retry_queue.get(fid, 0) > time.time():
@@ -629,11 +671,11 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
             # Micro-break / burst pause every 15-25 players
             if len(processed_fids) >= next_burst_target:
                 micro_break = random.uniform(5.0, 12.0)
-                time.sleep(micro_break)
+                interruptible_sleep(micro_break)
                 next_burst_target += random.randint(15, 25)
 
             human_delay = max(0.5, random.gauss(DELAY + 0.2, 0.3))
-            time.sleep(human_delay)
+            interruptible_sleep(human_delay)
 
     end_time_CPU = process_time()
     end_time = perf_counter()
@@ -645,6 +687,18 @@ def redeem_for_all(giftCode: str, file_path="data/players.db", default_kingdom=D
             progress_callback(len(processed_fids), len(players), counters, True, result_time)
         except Exception:
             pass
+
+    if fatal_reason == "Cancelled by user":
+        return (
+            f"⏹️ **Process Cancelled by User!**\n"
+            f"Code `{giftCode}` was stopped after processing {len(processed_fids)}/{len(players)} players in {result_time:.2f}s "
+            f"(CPU: {result_time_CPU:.2f}s)\n"
+            f"• Success: {counters['success']}\n"
+            f"• Already redeemed: {counters['already_redeemed']}\n"
+            f"• Flagged (Wrong/Moved Kingdom or Role Not Exist): {counters['wrong_kingdom']}\n"
+            f"• Rate limited: {counters['rate_limited']}\n"
+            f"• Other Errors: {counters['errors']}"
+        )
 
     if fatal_reason:
         return f"Giftcode {giftCode} stopped: {fatal_reason}"
