@@ -17,12 +17,19 @@ class MenuButtons(discord.ui.View):
     @discord.ui.button(label="Games", style=discord.ButtonStyle.primary, emoji="🎮")
     async def games_menu(self, interaction: discord.Interaction, button: discord.ui.Button):
         games_menu_panel = discord.Embed(
-            title="Choose one the games below:",
-            colour=discord.Colour.og_blurple())
+            title="🎮 Interactive Party & Mini-Games",
+            description="Choose a mini-game to play with your friends or alliance members:",
+            colour=discord.Colour.og_blurple()
+        )
         games_menu_panel.add_field(
             name="🤷 Would you rather ...",
-            value="> **The ultimate icebreaker!**\nPick between two impossible scenarios and see if your friends agree. Perfect for starting debates!",
-            inline=True
+            value="> Pick between impossible scenarios and see live community vote splits.",
+            inline=False
+        )
+        games_menu_panel.add_field(
+            name="🎲 Russian Roulette",
+            value="> Turn-based revolver luck challenge. Play solo or test your luck in a multiplayer lobby!",
+            inline=False
         )
         await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
 
@@ -90,6 +97,14 @@ class GameMenuButtons(discord.ui.View):
             await wyr_cog.start_wyr_game(interaction)
         else:
             await interaction.response.send_message("❌ Wyr game module not loaded.", ephemeral=True)
+
+    @discord.ui.button(label="Russian Roulette", style=discord.ButtonStyle.danger, emoji="🎲", row=0)
+    async def roulette_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        rr_cog = self.bot.get_cog("RussianRoulette")
+        if rr_cog:
+            await rr_cog.start_game(interaction)
+        else:
+            await interaction.response.send_message("❌ RussianRoulette game module not loaded.", ephemeral=True)
 
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=1)
     async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -422,58 +437,86 @@ class UtilityMenuButtons(discord.ui.View):
 
 
 class WyrButtons(discord.ui.View):
-    def __init__(self, bot, cog_instance): # Accept bot and cog
+    def __init__(self, bot: commands.Bot, cog_instance, question_data: dict):
         super().__init__(timeout=43200)
         self.bot = bot
         self.cog = cog_instance
+        self.question_data = question_data
+        self.question_id = question_data.get("id") if isinstance(question_data, dict) else None
+        if isinstance(question_data, dict):
+            self.option_a = question_data.get("option_a", "")
+            self.option_b = question_data.get("option_b", "")
+            self.global_a = question_data.get("votes_a", 0)
+            self.global_b = question_data.get("votes_b", 0)
+        elif isinstance(question_data, (list, tuple)):
+            self.option_a = question_data[0]
+            self.option_b = question_data[1]
+            self.global_a = 0
+            self.global_b = 0
+        else:
+            self.option_a = ""
+            self.option_b = ""
+            self.global_a = 0
+            self.global_b = 0
+
         self.voter_A = set()
         self.voter_B = set()
         self.message = None
 
-    @discord.ui.button(label="A", style=discord.ButtonStyle.primary, custom_id="wyr_a")
+    def get_embed(self) -> discord.Embed:
+        from utils.embeds import WyrEmbed
+        return WyrEmbed(
+            question_a=self.option_a,
+            question_b=self.option_b,
+            count_a=len(self.voter_A),
+            count_b=len(self.voter_B),
+            global_a=self.global_a + len(self.voter_A),
+            global_b=self.global_b + len(self.voter_B)
+        )
+
+    @discord.ui.button(label="Option A", style=discord.ButtonStyle.primary, emoji="🅰️", custom_id="wyr_a")
     async def button_a(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id in self.voter_B:
-            self.voter_B.remove(interaction.user.id)
-        self.voter_A.add(interaction.user.id)
-        await interaction.response.defer()
+        user_id = interaction.user.id
+        if user_id in self.voter_A:
+            self.voter_A.remove(user_id)
+        else:
+            if user_id in self.voter_B:
+                self.voter_B.remove(user_id)
+            self.voter_A.add(user_id)
+            if self.question_id and hasattr(self.bot, 'database') and hasattr(self.bot.database, 'record_wyr_vote'):
+                asyncio.create_task(self.bot.database.record_wyr_vote(self.question_id, 'A'))
 
-    @discord.ui.button(label="B", style=discord.ButtonStyle.primary, custom_id="wyr_b")
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Option B", style=discord.ButtonStyle.primary, emoji="🅱️", custom_id="wyr_b")
     async def button_b(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id in self.voter_A:
-            self.voter_A.remove(interaction.user.id)
-        self.voter_B.add(interaction.user.id)
-        await interaction.response.defer()
+        user_id = interaction.user.id
+        if user_id in self.voter_B:
+            self.voter_B.remove(user_id)
+        else:
+            if user_id in self.voter_A:
+                self.voter_A.remove(user_id)
+            self.voter_B.add(user_id)
+            if self.question_id and hasattr(self.bot, 'database') and hasattr(self.bot.database, 'record_wyr_vote'):
+                asyncio.create_task(self.bot.database.record_wyr_vote(self.question_id, 'B'))
 
-    @discord.ui.button(label="New question", style=discord.ButtonStyle.secondary, custom_id="new_question")
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="New Question", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="new_question")
     async def new_question(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Stop the current background loop before starting a new one
-        self.update_panel.stop()
-
-        # Disable current buttons so people don't click twice while loading
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(view=self)
-
-        # Call the start_game method from the Cog
         await self.cog.start_wyr_game(interaction)
 
-    @tasks.loop(seconds=3)
-    async def update_panel(self):
-        if self.message:
-            try:
-                panel = self.message.embeds[0]
-                panel.set_field_at(0, name="Votes", value=f"A: {len(self.voter_A)} | B: {len(self.voter_B)}")
-                await self.message.edit(embed=panel)
-            except Exception as e:
-                print(f"Loop error: {e}")
-                self.update_panel.stop()
-
     async def on_timeout(self):
-        self.update_panel.stop()
         for item in self.children:
             item.disabled = True
         if self.message:
-            await self.message.edit(view=self)
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
 
 
 class RallyCountdownView(discord.ui.View):

@@ -538,6 +538,19 @@ class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(q[0], "Eat pizza everyday")
             self.assertEqual(q[1], "Eat tacos everyday")
 
+            # Test vote recording
+            await db.record_wyr_vote(q["id"], "A")
+            q_after = await db.get_random_wyr_question()
+            self.assertEqual(q_after["votes_a"], 1)
+            self.assertEqual(q_after["votes_b"], 0)
+
+            # Test WyrEmbed progress bar calculation
+            from utils.embeds import WyrEmbed
+            bar_a, bar_b, pct_a, pct_b = WyrEmbed.calculate_bar(3, 1)
+            self.assertEqual(pct_a, 75)
+            self.assertEqual(pct_b, 25)
+            self.assertIn("█", bar_a)
+
 
 class TestMenuViews(unittest.TestCase):
     def test_menu_views_instantiation(self):
@@ -547,13 +560,49 @@ class TestMenuViews(unittest.TestCase):
         self.assertEqual(len(v_main.children), 3)
 
         v_game = GameMenuButtons(mock_bot)
-        self.assertEqual(len(v_game.children), 2)
+        self.assertEqual(len(v_game.children), 3)
 
         v_player = PlayerMenuButtons(mock_bot)
         self.assertGreaterEqual(len(v_player.children), 5)
 
         v_util = UtilityMenuButtons(mock_bot)
         self.assertGreaterEqual(len(v_util.children), 4)
+
+    def test_russian_roulette_gameplay(self):
+        from cogs.russian_roulette import RussianRouletteGame
+        game = RussianRouletteGame(chamber_size=6)
+        mock_user = MagicMock()
+        mock_user.id = 12345
+        mock_user.mention = "@Player1"
+        mock_user.display_name = "Player1"
+        game.players.append(mock_user)
+
+        # Pull trigger until live round
+        hits = 0
+        for _ in range(6):
+            is_hit, msg = game.pull_trigger(mock_user)
+            if is_hit:
+                hits += 1
+                break
+        self.assertEqual(hits, 1)
+        self.assertTrue(game.game_over)
+
+        # Reset
+        game.reset()
+        self.assertFalse(game.game_over)
+        self.assertEqual(game.current_chamber, 1)
+
+        # Test spin_and_pull
+        is_hit, msg = game.spin_and_pull(mock_user)
+        self.assertIn(mock_user.mention, msg)
+
+        # Test RussianRouletteView
+        from cogs.russian_roulette import RussianRouletteView
+        mock_bot = MagicMock()
+        view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6)
+        self.assertEqual(len(view.children), 4)
+        embed = view.get_embed()
+        self.assertIn("Russian Roulette", embed.title)
 
 
 class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):

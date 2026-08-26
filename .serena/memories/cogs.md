@@ -14,12 +14,14 @@ Covers all Discord cogs in `cogs/` directory.
 4. `cogs/rally_countdown.py`:
    - Dynamic voice/text rally timer countdowns and sound generation via `gTTS` / `audio/`.
 5. `cogs/wyr.py`:
-   - "Would you rather" interactive game using persistent button views in `utils/views.py`.
-6. `cogs/battle_tactics.py`:
+   - "Would you rather" interactive game with real-time ASCII progress bar voting and global vote persistence.
+6. `cogs/russian_roulette.py`:
+   - Interactive turn-based revolver duel (solo or multiplayer lobby) with visual cylinder status.
+7. `cogs/battle_tactics.py`:
    - Tactical battle support calculations and strategic suggestions.
-7. `cogs/roast.py`:
+8. `cogs/roast.py`:
    - Voice/text humor roast commands.
-8. `cogs/menu.py`:
+9. `cogs/menu.py`:
    - Interactive help navigation and menu panels.
 
 ## Cog Development Invariants
