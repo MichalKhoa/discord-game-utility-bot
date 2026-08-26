@@ -276,12 +276,63 @@ class PlayerListView(discord.ui.View):
     def __init__(self, db: PlayerDatabase, players: List[dict], alliance_filter: Optional[str] = None, page: int = 0):
         super().__init__(timeout=300)
         self.db = db
+        self.all_players = players
         self.players = players
         self.alliance_filter = alliance_filter
         self.page = page
         self.per_page = 15
         self.max_pages = max(1, (len(players) + self.per_page - 1) // self.per_page)
+        self._build_filter_dropdown()
         self.update_buttons()
+
+    def _build_filter_dropdown(self):
+        # Extract unique alliances from roster
+        alliances = sorted({p["alliance"].strip().upper() for p in self.all_players if p.get("alliance") and p["alliance"].strip()})
+
+        options = [
+            discord.SelectOption(label="All Players", value="ALL", emoji="🌐", description=f"Total {len(self.all_players)} registered players"),
+            discord.SelectOption(label="Active Only", value="STATUS_ACTIVE", emoji="🟢", description="Accounts in good standing"),
+            discord.SelectOption(label="Flagged Only", value="STATUS_FLAGGED", emoji="🟡", description="Accounts with warnings or errors"),
+            discord.SelectOption(label="Disabled Only", value="STATUS_DISABLED", emoji="🔴", description="Inactive or disabled accounts"),
+        ]
+
+        for a in alliances[:18]:
+            count = sum(1 for p in self.all_players if (p.get("alliance") or "").strip().upper() == a)
+            options.append(discord.SelectOption(label=f"Alliance [{a}]", value=f"ALLIANCE_{a}", emoji="🛡️", description=f"{count} member(s)"))
+
+        if len(options) > 1:
+            select = discord.ui.Select(
+                placeholder="🔍 Filter by Alliance or Status...",
+                options=options,
+                row=0,
+                custom_id="select_player_filter"
+            )
+            select.callback = self.filter_callback
+            self.add_item(select)
+
+    async def filter_callback(self, interaction: discord.Interaction):
+        selected = interaction.data["values"][0]
+        if selected == "ALL":
+            self.players = self.all_players
+            self.alliance_filter = None
+        elif selected == "STATUS_ACTIVE":
+            self.players = [p for p in self.all_players if p.get("status", "ACTIVE") == "ACTIVE" and p.get("warning_count", 0) == 0]
+            self.alliance_filter = "Active Only"
+        elif selected == "STATUS_FLAGGED":
+            self.players = [p for p in self.all_players if (p.get("status") == "FLAGGED" or p.get("warning_count", 0) > 0) and p.get("status") != "DISABLED"]
+            self.alliance_filter = "Flagged Only"
+        elif selected == "STATUS_DISABLED":
+            self.players = [p for p in self.all_players if p.get("status") == "DISABLED"]
+            self.alliance_filter = "Disabled Only"
+        elif selected.startswith("ALLIANCE_"):
+            tag = selected[len("ALLIANCE_"):]
+            self.players = [p for p in self.all_players if (p.get("alliance") or "").strip().upper() == tag]
+            self.alliance_filter = f"Alliance [{tag}]"
+
+        self.page = 0
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
     def update_buttons(self):
         self.prev_btn.disabled = (self.page <= 0)
@@ -294,7 +345,7 @@ class PlayerListView(discord.ui.View):
 
         filter_str = f" • Filter: `{self.alliance_filter}`" if self.alliance_filter else ""
         embed = discord.Embed(
-            title=f"📋 Registered Players ({len(self.players)} total){filter_str}",
+            title=f"📋 Registered Players ({len(self.players)} shown / {len(self.all_players)} total){filter_str}",
             colour=discord.Colour.blurple()
         )
 
@@ -323,19 +374,30 @@ class PlayerListView(discord.ui.View):
         embed.set_footer(text=f"Page {self.page + 1} of {self.max_pages} • 🟢 Active | 🟡 Flagged | 🔴 Disabled")
         return embed
 
-    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="btn_prev")
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="btn_prev", row=1)
     async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page > 0:
             self.page -= 1
             self.update_buttons()
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="btn_next")
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="btn_next", row=1)
     async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.page < self.max_pages - 1:
             self.page += 1
             self.update_buttons()
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_player_refresh", row=1)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.all_players = await self.db.get_all_players()
+        self.players = self.all_players
+        self.alliance_filter = None
+        self.page = 0
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.get_embed(), view=self)
 
 
 class FlaggedPlayersView(discord.ui.View):

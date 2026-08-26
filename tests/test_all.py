@@ -659,6 +659,32 @@ class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
         self.assertIn("FlaggedPlayer0", embed.description)
         self.assertIn("Page 1 of 3", embed.footer.text)
 
+    def test_player_list_view_filter(self):
+        from cogs.player_manager import PlayerListView
+        mock_db = MagicMock()
+        mock_players = [
+            {"fid": "1001", "kid": "278", "name": "PlayerA", "alliance": "NOR", "status": "ACTIVE", "warning_count": 0},
+            {"fid": "1002", "kid": "278", "name": "PlayerB", "alliance": "OvO", "status": "FLAGGED", "warning_count": 1},
+            {"fid": "1003", "kid": "278", "name": "PlayerC", "alliance": "NOR", "status": "DISABLED", "warning_count": 3},
+        ]
+        view = PlayerListView(mock_db, mock_players)
+        self.assertEqual(len(view.players), 3)
+
+        # Test filter callback for alliance
+        mock_interaction = MagicMock()
+        mock_interaction.data = {"values": ["ALLIANCE_NOR"]}
+        mock_interaction.response = AsyncMock()
+        import asyncio
+        asyncio.run(view.filter_callback(mock_interaction))
+        self.assertEqual(len(view.players), 2)
+        self.assertIn("Alliance [NOR]", view.alliance_filter)
+
+        # Test filter callback for FLAGGED
+        mock_interaction.data = {"values": ["STATUS_FLAGGED"]}
+        asyncio.run(view.filter_callback(mock_interaction))
+        self.assertEqual(len(view.players), 1)
+        self.assertEqual(view.players[0]["fid"], "1002")
+
 
 if __name__ == '__main__':
     unittest.main()
