@@ -8,6 +8,7 @@ Covers all Discord cogs in `cogs/` directory.
    - Deferral handling and interactive result embeds.
 2. `cogs/player_manager.py`:
    - Player registration, linking game ID to Discord user, alliance roster management.
+   - Interactive paginated views: `PlayerListView` and `FlaggedPlayersView`.
 3. `cogs/backup_sync.py`:
    - Backup/restore mechanisms and automated sync to Google Sheets.
 4. `cogs/rally_countdown.py`:

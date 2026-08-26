@@ -641,6 +641,25 @@ class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
         mock_on_confirm.assert_called_once_with(mock_interaction_valid, reason="wrong code")
 
 
+    def test_flagged_players_view(self):
+        from cogs.player_manager import FlaggedPlayersView
+        mock_db = MagicMock()
+        mock_players = [
+            {"fid": f"1000{i}", "kid": "278", "name": f"FlaggedPlayer{i}", "status": "FLAGGED", "warning_reason": "Role Not Exist", "warning_count": 2}
+            for i in range(20)
+        ]
+        view = FlaggedPlayersView(mock_db, mock_players)
+        self.assertEqual(view.max_pages, 3)
+        self.assertEqual(view.page, 0)
+        self.assertTrue(view.prev_btn.disabled)
+        self.assertFalse(view.next_btn.disabled)
+
+        embed = view.get_embed()
+        self.assertIn("Flagged / Problematic Players", embed.title)
+        self.assertIn("FlaggedPlayer0", embed.description)
+        self.assertIn("Page 1 of 3", embed.footer.text)
+
+
 if __name__ == '__main__':
     unittest.main()
 

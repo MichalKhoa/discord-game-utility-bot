@@ -6,7 +6,7 @@ from utils.embeds import MainMenuEmbed
 from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal, SearchPlayerModal
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 from databases.player_database import PlayerDatabase
-from cogs.player_manager import PlayerAddModal, PlayerBatchAddModal, PlayerListView
+from cogs.player_manager import PlayerAddModal, PlayerBatchAddModal, PlayerListView, FlaggedPlayersView
 
 
 class MenuButtons(discord.ui.View):
@@ -175,11 +175,19 @@ class PlayerMenuButtons(discord.ui.View):
 
     @discord.ui.button(label="Flagged Players", style=discord.ButtonStyle.danger, emoji="⚠️", row=1)
     async def flagged_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pm_cog = self.bot.get_cog("PlayerManager")
-        if pm_cog:
-            await pm_cog.flagged_players(interaction)
-        else:
-            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        flagged = await self.db.get_flagged_players()
+        if not flagged:
+            embed = discord.Embed(
+                title="✅ Flagged Players",
+                description="No players are currently flagged or disabled. All registered accounts are active and in good standing.",
+                colour=discord.Colour.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        view = FlaggedPlayersView(self.db, flagged)
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
     @discord.ui.button(label="Player Stats", style=discord.ButtonStyle.secondary, emoji="📊", row=1)
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

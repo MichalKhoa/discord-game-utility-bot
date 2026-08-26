@@ -338,6 +338,80 @@ class PlayerListView(discord.ui.View):
             await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 
+class FlaggedPlayersView(discord.ui.View):
+    def __init__(self, db: PlayerDatabase, players: List[dict], page: int = 0):
+        super().__init__(timeout=300)
+        self.db = db
+        self.players = players
+        self.page = page
+        self.per_page = 8
+        self.max_pages = max(1, (len(players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.prev_btn.disabled = (self.page <= 0)
+        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+
+    def get_embed(self) -> discord.Embed:
+        start_idx = self.page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.players))
+        page_items = self.players[start_idx:end_idx]
+
+        embed = discord.Embed(
+            title=f"⚠️ Flagged / Problematic Players ({len(self.players)} total)",
+            colour=discord.Colour.orange()
+        )
+
+        if not page_items:
+            embed.description = "✅ No players are currently flagged or disabled."
+            return embed
+
+        lines = []
+        for i, p in enumerate(page_items, start=start_idx + 1):
+            name = p.get("name") or "Unknown"
+            fid = p.get("fid")
+            kid = p.get("kid", "278")
+            status = p.get("status", "FLAGGED")
+            badge = "🔴" if status == "DISABLED" else "🟡"
+            reason = p.get("warning_reason") or "Verification failed / API redemption error"
+            if len(reason) > 100:
+                reason = reason[:97] + "..."
+            strikes = p.get("warning_count", 0)
+            lines.append(
+                f"`{i:2d}.` {badge} **{name}** (`{fid}` | K{kid}) — `{strikes} strikes`\n> ⚠️ *{reason}*"
+            )
+
+        embed.description = "\n\n".join(lines)
+        embed.set_footer(
+            text=f"Page {self.page + 1} of {self.max_pages} • 🟡 Flagged | 🔴 Disabled • Use /player unflag to restore"
+        )
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="btn_flagged_prev")
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="btn_flagged_next")
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_pages - 1:
+            self.page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_flagged_refresh")
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.players = await self.db.get_flagged_players()
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        if self.page >= self.max_pages:
+            self.page = max(0, self.max_pages - 1)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.get_embed(), view=self)
+
+
 class PlayerManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -444,22 +518,8 @@ class PlayerManager(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        embed = discord.Embed(
-            title=f"⚠️ Flagged / Problematic Players ({len(flagged)} total)",
-            description="These players failed API redemption or were flagged. Use `/player edit` to fix them.",
-            colour=discord.Colour.orange()
-        )
-
-        lines = []
-        for p in flagged[:25]:
-            status = p.get("status")
-            badge = "🔴" if status == "DISABLED" else "🟡"
-            reason = p.get("warning_reason") or "Unknown error"
-            strikes = p.get("warning_count", 0)
-            lines.append(f"{badge} **{p.get('name') or p.get('fid')}** (`{p.get('fid')}` | K{p.get('kid')}) — `{strikes} strikes`\n> ⚠️ *{reason}*")
-
-        embed.description = "\n\n".join(lines)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        view = FlaggedPlayersView(self.db, flagged)
+        await interaction.followup.send(embed=view.get_embed(), view=view, ephemeral=True)
 
     @player_group.command(name="unflag", description="Clear strikes and restore player to ACTIVE status")
     @app_commands.describe(player="Search by Player Name or FID to unflag")
