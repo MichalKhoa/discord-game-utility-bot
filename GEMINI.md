@@ -38,3 +38,10 @@
 - **Style**: Terse, invariant-focused agent notes. Record durable conventions, API schemas, and architectural boundaries rather than temporary task details.
 - **Maintenance**: Update memory files whenever core schemas, database models, cog interfaces, or key external integrations change.
 
+---
+
+## Git & Feature Completion Workflow
+- **Prompt for Commit & Push**: After implementing and verifying any feature, bug fix, or refactor, always proactively ask the user if they would like to commit and push the changes.
+- **Conventional Commits**: Format commit messages tersely with Conventional Commits (e.g. `feat(...)`, `fix(...)`, `refactor(...)`).
+- **Atomic Commits**: Keep distinct changes separate when multiple modules or tasks are modified.
+
