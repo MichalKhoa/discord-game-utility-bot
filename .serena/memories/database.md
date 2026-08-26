@@ -14,8 +14,8 @@ Covers SQLite database access via `aiosqlite`. Databases reside in `data/`.
 
 ### 2. `Question_Database` (`databases/wyr_database.py`)
 - Target: `data/wyr_question_bank.db`
-- Primary Table: `wyr_questions` (id, option_a, option_b, option_a_count, option_b_count).
-- Methods: `init_db()`, `get_random_wyr_question()`, `increment_wyr_choice()`.
+- Primary Table: `wyr_questions` (id, option_a, option_b, rating, votes_a, votes_b).
+- Methods: `init_db(seed_defaults)`, `get_random_wyr_question()`, `record_wyr_vote(question_id, choice)`, `add_wyr_question(...)`.
 
 ## SQLite Async Invariants
 - Always use `async with aiosqlite.connect(...)` or connection helper.

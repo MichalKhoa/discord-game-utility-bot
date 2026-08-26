@@ -29,7 +29,7 @@ class DiscordGameUtilityBot(commands.Bot):
         self.database = Question_Database()
 
     async def setup_hook(self):
-        await self.database.init_db()
+        await self.database.init_db(seed_defaults=True)
         cogs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cogs')
         for filename in os.listdir(cogs_dir):
             if filename.endswith('.py'):
