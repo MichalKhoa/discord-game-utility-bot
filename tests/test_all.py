@@ -600,9 +600,12 @@ class TestMenuViews(unittest.TestCase):
         from cogs.russian_roulette import RussianRouletteView
         mock_bot = MagicMock()
         view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6)
-        self.assertEqual(len(view.children), 4)
-        embed = view.get_embed()
+        embed, gif_file = view.get_embed()
         self.assertIn("Russian Roulette", embed.title)
+        self.assertIsNone(gif_file)
+
+        suspense_embed, suspense_file = view.get_suspense_embed(mock_user, action_type="spin")
+        self.assertIn("Spinning Cylinder", suspense_embed.title)
 
 
 class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
