@@ -1,5 +1,6 @@
 import os
 import io
+import asyncio
 import unittest
 from unittest.mock import patch, MagicMock, AsyncMock
 import tempfile
@@ -736,6 +737,166 @@ class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
         asyncio.run(view.filter_callback(mock_interaction))
         self.assertEqual(len(view.players), 1)
         self.assertEqual(view.players[0]["fid"], "1002")
+
+
+class TestAutoRedeemSystem(unittest.IsolatedAsyncioTestCase):
+    async def test_watched_channels_crud(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_watched.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            default_chans = {111, 222}
+            # Initially returns default
+            chans = await db.get_watched_channels(default_channels=default_chans)
+            self.assertEqual(chans, {111, 222})
+
+            # Add channel
+            chans = await db.add_watched_channel(333, default_channels=default_chans)
+            self.assertIn(333, chans)
+            self.assertIn(111, chans)
+
+            # Persisted
+            loaded = await db.get_watched_channels(default_channels=default_chans)
+            self.assertIn(333, loaded)
+
+            # Remove channel
+            chans = await db.remove_watched_channel(111, default_channels=default_chans)
+            self.assertNotIn(111, chans)
+            self.assertIn(333, chans)
+
+    async def test_process_announcement_message_auto_redeem_callback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_proc.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+
+            mock_bot = MagicMock()
+            mock_msg = MagicMock(spec=discord.Message)
+            mock_msg.channel = MagicMock()
+            mock_msg.channel.id = 1374889273077272636  # in default WATCHED_CHANNELS
+            mock_msg.content = "New gift code available: `FRESHCODE2026`! Enjoy!"
+            mock_msg.embeds = []
+            mock_msg.author = MagicMock()
+            mock_msg.author.display_name = "GameAdmin"
+            mock_msg.author.display_avatar.url = "http://example.com/avatar.png"
+
+            auto_callback = AsyncMock()
+            codes = await process_announcement_message(
+                mock_msg,
+                mock_bot,
+                db,
+                auto_redeem_callback=auto_callback
+            )
+            self.assertEqual(codes, ["FRESHCODE2026"])
+            auto_callback.assert_called_once_with(["FRESHCODE2026"], mock_msg)
+
+    async def test_process_announcement_message_filters_already_redeemed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_proc2.db")
+            db = PlayerDatabase(db_path)
+            await db.init_db(auto_migrate=False)
+            await db.log_redeemed_code("OLDCODE999")
+
+            mock_bot = MagicMock()
+            mock_msg = MagicMock(spec=discord.Message)
+            mock_msg.channel = MagicMock()
+            mock_msg.channel.id = 1374889273077272636
+            mock_msg.content = "Code: `OLDCODE999`"
+            mock_msg.embeds = []
+
+            auto_callback = AsyncMock()
+            codes = await process_announcement_message(
+                mock_msg,
+                mock_bot,
+                db,
+                auto_redeem_callback=auto_callback
+            )
+            self.assertEqual(codes, [])
+            auto_callback.assert_not_called()
+
+    async def test_auto_redeem_codes_dispatches_run_redeem(self):
+        from cogs.code_redeem import CodeRedeem
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_bot = MagicMock()
+            mock_bot.owner_id = 12345
+            cog = CodeRedeem(mock_bot)
+            cog.db = PlayerDatabase(os.path.join(tmpdir, "test_auto.db"))
+            await cog.db.init_db(auto_migrate=False)
+
+            with patch.object(cog, "run_redeem", new_callable=AsyncMock) as mock_run:
+                mock_channel = AsyncMock()
+                mock_msg = MagicMock()
+                mock_msg.channel = mock_channel
+                mock_msg.jump_url = "https://discord.com/msg/1"
+
+                await cog.auto_redeem_codes(["AUTOTESTCODE"], source_message=mock_msg)
+                await asyncio.sleep(0.05)
+
+                mock_run.assert_called_once()
+                self.assertEqual(mock_run.call_args[0][1], ["AUTOTESTCODE"])
+
+    async def test_scan_and_redeem_finds_history_codes(self):
+        from cogs.code_redeem import CodeRedeem
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_bot = MagicMock()
+            cog = CodeRedeem(mock_bot)
+            cog.db = PlayerDatabase(os.path.join(tmpdir, "test_scan.db"))
+            await cog.db.init_db(auto_migrate=False)
+
+            # Mock watched channel
+            mock_channel = MagicMock()
+            mock_channel.id = 1374889273077272636
+            perms = MagicMock()
+            perms.read_message_history = True
+            mock_channel.permissions_for.return_value = perms
+
+            # Mock message in history
+            mock_hist_msg = MagicMock()
+            mock_hist_msg.content = "Latest gift code: `SCANTEST123`"
+            mock_hist_msg.embeds = []
+
+            async def async_iter(*args, **kwargs):
+                yield mock_hist_msg
+
+            mock_channel.history = MagicMock(side_effect=async_iter)
+            mock_bot.get_channel.return_value = mock_channel
+
+            with patch.object(cog, "auto_redeem_codes", new_callable=AsyncMock) as mock_auto:
+                found = await cog.scan_and_redeem(days=3)
+                self.assertIn("SCANTEST123", found)
+                mock_auto.assert_called_once_with(["SCANTEST123"], source_title="Background Channel Scan (3d)")
+
+    async def test_redeem_channel_commands(self):
+        from cogs.code_redeem import CodeRedeem
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_bot = MagicMock()
+            mock_bot.is_owner = AsyncMock(return_value=True)
+            cog = CodeRedeem(mock_bot)
+            cog.db = PlayerDatabase(os.path.join(tmpdir, "test_cmds.db"))
+            await cog.db.init_db(auto_migrate=False)
+
+            # Test set-channel
+            mock_ch = MagicMock(spec=discord.TextChannel)
+            mock_ch.id = 55555
+            mock_ch.mention = "<#55555>"
+            mock_interaction = MagicMock(spec=discord.Interaction)
+            mock_interaction.user = MagicMock()
+            mock_interaction.response.send_message = AsyncMock()
+
+            await cog.redeem_set_channel_cmd.callback(cog, mock_interaction, mock_ch)
+            saved = await cog.db.get_setting("redeem_alert_channel_id")
+            self.assertEqual(saved, "55555")
+
+            # Test watch-channel add
+            await cog.watch_channel_add.callback(cog, mock_interaction, mock_ch)
+            watched = await cog.db.get_watched_channels()
+            self.assertIn(55555, watched)
+
+            # Test watch-channel remove
+            await cog.watch_channel_remove.callback(cog, mock_interaction, mock_ch)
+            watched = await cog.db.get_watched_channels()
+            self.assertNotIn(55555, watched)
 
 
 if __name__ == '__main__':

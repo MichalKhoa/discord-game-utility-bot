@@ -62,7 +62,12 @@ def extract_validity_info(text: str) -> Optional[str]:
     return None
 
 
-def create_detected_code_embed(code: str, message: discord.Message, validity: Optional[str] = None) -> discord.Embed:
+def create_detected_code_embed(
+    code: str,
+    message: discord.Message,
+    validity: Optional[str] = None,
+    auto_redeemed: bool = False
+) -> discord.Embed:
     """Builds an alert embed when a new gift code is detected in announcement channels."""
     if validity is None and message:
         full_text = message.content or ""
@@ -75,26 +80,37 @@ def create_detected_code_embed(code: str, message: discord.Message, validity: Op
                 full_text += f"\n{f.name} {f.value}"
         validity = extract_validity_info(full_text)
 
+    channel_id = getattr(getattr(message, "channel", None), "id", "Unknown")
     embed = discord.Embed(
         title="🎁 New Official Gift Code Detected!",
-        description=f"**Code**: `{code}`\n\nDetected in announcement channel <#{message.channel.id}>.",
+        description=f"**Code**: `{code}`\n\nDetected in announcement channel <#{channel_id}>.",
         colour=discord.Colour.green()
     )
-    if message.author:
-        embed.set_author(name=f"Source: {message.author.display_name}", icon_url=message.author.display_avatar.url)
+    if hasattr(message, "author") and message.author and hasattr(message.author, "display_name"):
+        avatar_url = message.author.display_avatar.url if hasattr(message.author, "display_avatar") else None
+        embed.set_author(name=f"Source: {message.author.display_name}", icon_url=avatar_url)
 
     if validity:
         embed.add_field(name="📅 Valid Until", value=f"**{validity}**", inline=False)
 
-    snippet = message.content[:200] + ("..." if len(message.content) > 200 else "")
+    snippet = (getattr(message, "content", "") or "")[:200]
+    if len(getattr(message, "content", "") or "") > 200:
+        snippet += "..."
     if snippet:
         embed.add_field(name="📢 Announcement Snippet", value=f"> {snippet}", inline=False)
 
-    embed.add_field(
-        name="⚡ Quick Action",
-        value="Click **Redeem for All Players** below to dispatch batch redemption immediately.",
-        inline=False
-    )
+    if auto_redeemed:
+        embed.add_field(
+            name="⚡ Automated Action",
+            value="Automatic batch redemption has started for all active players.",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="⚡ Quick Action",
+            value="Click **Redeem for All Players** below to dispatch batch redemption immediately.",
+            inline=False
+        )
     embed.set_footer(text="Kingshot Gift Code Auto-Detector")
     return embed
 
@@ -132,16 +148,27 @@ class DetectedCodeView(discord.ui.View):
         await code_redeem_cog._execute_batch_redemption(interaction, [self.code])
 
 
-async def process_announcement_message(message: discord.Message, bot: discord.Client, db) -> List[str]:
+async def process_announcement_message(
+    message: discord.Message,
+    bot: discord.Client,
+    db,
+    auto_redeem_callback=None
+) -> List[str]:
     """
     Checks incoming message against watched announcement channels,
-    extracts unredeemed codes, and posts interactive 1-click redeem alert.
+    extracts unredeemed codes, and triggers auto-redemption or posts alert view.
     """
-    if message.channel.id not in WATCHED_CHANNELS:
+    if hasattr(db, "get_watched_channels"):
+        watched = await db.get_watched_channels(default_channels=WATCHED_CHANNELS)
+    else:
+        watched = WATCHED_CHANNELS
+
+    channel_id = getattr(getattr(message, "channel", None), "id", None)
+    if channel_id not in watched:
         return []
 
-    full_text = message.content or ""
-    for emb in message.embeds:
+    full_text = getattr(message, "content", "") or ""
+    for emb in getattr(message, "embeds", []):
         if emb.title:
             full_text += f"\n{emb.title}"
         if emb.description:
@@ -158,11 +185,19 @@ async def process_announcement_message(message: discord.Message, bot: discord.Cl
         already_redeemed = await db.is_code_redeemed(code)
         if not already_redeemed:
             unredeemed_found.append(code)
-            embed = create_detected_code_embed(code, message)
+
+    if not unredeemed_found:
+        return []
+
+    if auto_redeem_callback:
+        await auto_redeem_callback(unredeemed_found, message)
+    else:
+        for code in unredeemed_found:
+            embed = create_detected_code_embed(code, message, auto_redeemed=False)
             view = DetectedCodeView(code, bot)
             try:
                 await message.channel.send(embed=embed, view=view)
             except (discord.Forbidden, discord.HTTPException) as e:
-                print(f"DEBUG: Failed to send detected code embed to channel {message.channel.id}: {e}")
+                print(f"DEBUG: Failed to send detected code embed to channel {channel_id}: {e}")
 
     return unredeemed_found

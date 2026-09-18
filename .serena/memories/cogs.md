@@ -5,7 +5,9 @@ Covers all Discord cogs in `cogs/` directory.
 ## Cog Manifest
 1. `cogs/code_redeem.py`:
    - Game gift code batch redemption via parallel worker tasks.
-   - Deferral handling and interactive result embeds.
+   - Real-time automated code detection from announcement channels and periodic/startup scanner.
+   - Automated batch redemption dispatch for unredeemed codes with queue/lock handling.
+   - Commands: `/redeem-for-all`, `/redeem-for-player`, `/redeem-stop`, `/redeem-history`, `/redeem-scan-history`, `/redeem-set-channel`, `/redeem-watch-channel`.
 2. `cogs/player_manager.py`:
    - Player registration, linking game ID to Discord user, alliance roster management.
    - Interactive paginated views: `PlayerListView` (with dynamic alliance/status dropdown filter) and `FlaggedPlayersView`.

@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
-from typing import Optional, List
+from discord.ext import commands, tasks
+from typing import Optional, List, Set
 
 import utils.redeem_code
 import utils.code_detector
@@ -174,6 +174,11 @@ class CodeRedeem(commands.Cog):
         self.active_author_id: Optional[int] = None
         self.stopped_by_user: Optional[discord.abc.User] = None
         self.stop_reason: Optional[str] = None
+        self.pending_or_running_codes: Set[str] = set()
+
+    def cog_unload(self):
+        if hasattr(self, "auto_scan_loop") and self.auto_scan_loop.is_running():
+            self.auto_scan_loop.cancel()
 
     def stop_current_redemption(self, user: Optional[discord.abc.User] = None, reason: Optional[str] = None) -> bool:
         """Signals active batch redemption to abort."""
@@ -187,12 +192,169 @@ class CodeRedeem(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         await self.db.init_db()
+        if not self.auto_scan_loop.is_running():
+            self.auto_scan_loop.start()
+        asyncio.create_task(self._initial_startup_scan())
+
+    async def _initial_startup_scan(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(5)
+        try:
+            await self.scan_and_redeem(days=7)
+        except Exception as e:
+            print(f"DEBUG: Error in initial startup scan: {e}")
+
+    @tasks.loop(minutes=30)
+    async def auto_scan_loop(self):
+        await self.bot.wait_until_ready()
+        try:
+            await self.scan_and_redeem(days=1)
+        except Exception as e:
+            print(f"DEBUG: Error in auto_scan_loop: {e}")
+
+    async def get_notification_channel(self, preferred_channel: Optional[discord.abc.Messageable] = None) -> Optional[discord.abc.Messageable]:
+        """Resolves optimal channel for posting redemption progress and alerts."""
+        cid_str = await self.db.get_setting("redeem_alert_channel_id")
+        if cid_str and cid_str.isdigit():
+            ch = self.bot.get_channel(int(cid_str))
+            if not ch:
+                try:
+                    ch = await self.bot.fetch_channel(int(cid_str))
+                except Exception:
+                    pass
+            if ch and hasattr(ch, "send"):
+                return ch
+
+        if preferred_channel and hasattr(preferred_channel, "guild") and preferred_channel.guild:
+            if hasattr(preferred_channel, "permissions_for"):
+                perms = preferred_channel.permissions_for(getattr(preferred_channel.guild, "me", None))
+                if asyncio.iscoroutine(perms):
+                    perms = await perms
+                if getattr(perms, "send_messages", False):
+                    return preferred_channel
+
+        for guild in getattr(self.bot, "guilds", []):
+            for ch in getattr(guild, "text_channels", []):
+                perms = ch.permissions_for(getattr(guild, "me", None))
+                if asyncio.iscoroutine(perms):
+                    perms = await perms
+                if getattr(perms, "send_messages", False) and "bot" in getattr(ch, "name", "").lower():
+                    return ch
+
+        return preferred_channel
+
+    async def auto_redeem_codes(
+        self,
+        codes: List[str],
+        source_message: Optional[discord.Message] = None,
+        source_title: str = "Announcement"
+    ):
+        """Automatically initiates batch redemption for new unredeemed codes."""
+        unredeemed = []
+        for c in codes:
+            c_clean = c.strip().upper()
+            if not c_clean or c_clean in self.pending_or_running_codes:
+                continue
+            is_done = await self.db.is_code_redeemed(c_clean)
+            if not is_done and c_clean not in unredeemed:
+                unredeemed.append(c_clean)
+
+        if not unredeemed:
+            return
+
+        for c in unredeemed:
+            self.pending_or_running_codes.add(c)
+
+        pref_ch = getattr(source_message, "channel", None) if source_message else None
+        target_channel = await self.get_notification_channel(pref_ch)
+        if not target_channel:
+            target_channel = pref_ch
+
+        owner_id = getattr(self.bot, "owner_id", None) or 210022124423741440
+
+        alert_embed = discord.Embed(
+            title="🎁 New Gift Code Auto-Redemption Triggered!",
+            description=(
+                f"**Detected Code(s)**: `{', '.join(unredeemed)}`\n"
+                f"**Source**: {source_title}\n\n"
+                f"⚡ **Automated batch redemption dispatched for all active players!**"
+            ),
+            colour=discord.Colour.green()
+        )
+        if source_message and hasattr(source_message, "jump_url"):
+            alert_embed.add_field(name="🔗 Source Message", value=f"[Jump to Announcement]({source_message.jump_url})", inline=False)
+
+        try:
+            if target_channel and hasattr(target_channel, "send"):
+                await target_channel.send(embed=alert_embed)
+        except Exception as e:
+            print(f"DEBUG: Failed to send auto-redeem alert embed: {e}")
+
+        async def _execute_and_clean():
+            try:
+                await self.run_redeem(target_channel, unredeemed, user_id=owner_id)
+            finally:
+                for c in unredeemed:
+                    self.pending_or_running_codes.discard(c)
+
+        task = asyncio.create_task(_execute_and_clean())
+        self.running_tasks.add(task)
+        task.add_done_callback(self.running_tasks.discard)
+
+    async def scan_and_redeem(self, days: int = 7) -> List[str]:
+        """Scans watched channels for unredeemed codes and automatically redeems them."""
+        watched = await self.db.get_watched_channels(default_channels=utils.code_detector.WATCHED_CHANNELS)
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)
+        found_codes = []
+
+        for ch_id in watched:
+            ch = self.bot.get_channel(ch_id)
+            if not ch:
+                try:
+                    ch = await self.bot.fetch_channel(ch_id)
+                except Exception:
+                    continue
+
+            perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) else None
+            if perms and not perms.read_message_history:
+                continue
+
+            try:
+                async for msg in ch.history(limit=100, after=cutoff):
+                    full_text = getattr(msg, "content", "") or ""
+                    for emb in getattr(msg, "embeds", []):
+                        if emb.title:
+                            full_text += f"\n{emb.title}"
+                        if emb.description:
+                            full_text += f"\n{emb.description}"
+                        for f in emb.fields:
+                            full_text += f"\n{f.name} {f.value}"
+
+                    candidates = utils.code_detector.extract_candidate_codes(full_text)
+                    for code in candidates:
+                        if code not in found_codes:
+                            is_logged = await self.db.is_code_redeemed(code)
+                            if not is_logged and code not in self.pending_or_running_codes:
+                                found_codes.append(code)
+            except Exception as e:
+                print(f"DEBUG: Error scanning history in channel {ch_id}: {e}")
+
+        if found_codes:
+            print(f"DEBUG: scan_and_redeem found new unredeemed codes: {found_codes}")
+            await self.auto_redeem_codes(found_codes, source_title=f"Background Channel Scan ({days}d)")
+
+        return found_codes
 
     @commands.Cog.listener("on_message")
     async def on_announcement_message(self, message: discord.Message):
         if self.bot.user and message.author.id == self.bot.user.id:
             return
-        await utils.code_detector.process_announcement_message(message, self.bot, self.db)
+        await utils.code_detector.process_announcement_message(
+            message,
+            self.bot,
+            self.db,
+            auto_redeem_callback=self.auto_redeem_codes
+        )
 
     @app_commands.command(name="redeem-for-all", description="Redeem codes (separated by ;) for in-game rewards!")
     @app_commands.describe(gift_code="The code(s) you want to redeem, separated by ;")
@@ -252,8 +414,16 @@ class CodeRedeem(commands.Cog):
         name="redeem-scan-history",
         description="Scan watched announcement channels for gift codes posted in recent history"
     )
-    @app_commands.describe(days="Number of past days to scan (1 to 90, default: 30)")
-    async def scan_history_cmd(self, interaction: discord.Interaction, days: Optional[int] = 30):
+    @app_commands.describe(
+        days="Number of past days to scan (1 to 90, default: 30)",
+        auto_redeem="Automatically start batch redemption if new codes are found (default: True)"
+    )
+    async def scan_history_cmd(
+        self,
+        interaction: discord.Interaction,
+        days: Optional[int] = 30,
+        auto_redeem: Optional[bool] = True
+    ):
         await interaction.response.defer(thinking=True)
 
         days = max(1, min(days or 30, 90))
@@ -263,7 +433,8 @@ class CodeRedeem(commands.Cog):
         already_redeemed_found = []
         channel_status = []
 
-        for ch_id in utils.code_detector.WATCHED_CHANNELS:
+        watched = await self.db.get_watched_channels(default_channels=utils.code_detector.WATCHED_CHANNELS)
+        for ch_id in watched:
             channel = self.bot.get_channel(ch_id)
             if not channel:
                 try:
@@ -320,9 +491,21 @@ class CodeRedeem(commands.Cog):
             codes_str = ", ".join(f"`{c}`" for c in new_codes_found)
             embed.add_field(
                 name="🎁 New Unredeemed Codes Detected",
-                value=f"{codes_str}\n*(Click button below to redeem)*",
+                value=f"{codes_str}",
                 inline=False
             )
+            if auto_redeem:
+                embed.add_field(
+                    name="⚡ Automated Action",
+                    value="Automatic batch redemption has started for all active players!",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="⚡ Quick Action",
+                    value="*(Click button below to redeem)*",
+                    inline=False
+                )
         else:
             embed.add_field(
                 name="🎁 New Unredeemed Codes",
@@ -338,11 +521,114 @@ class CodeRedeem(commands.Cog):
             )
 
         if new_codes_found:
-            combined_code = ";".join(new_codes_found)
-            view = utils.code_detector.DetectedCodeView(combined_code, self.bot)
-            await interaction.followup.send(embed=embed, view=view)
+            if auto_redeem:
+                await interaction.followup.send(embed=embed)
+                await self.auto_redeem_codes(new_codes_found, source_title=f"Manual Scan ({days} Days)")
+            else:
+                combined_code = ";".join(new_codes_found)
+                view = utils.code_detector.DetectedCodeView(combined_code, self.bot)
+                await interaction.followup.send(embed=embed, view=view)
         else:
             await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="redeem-set-channel", description="Set the Discord channel for automated gift code alerts & progress")
+    @app_commands.describe(channel="The text channel where redemption updates should be posted")
+    async def redeem_set_channel_cmd(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        is_owner = await self.bot.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_owner or is_admin):
+            await interaction.response.send_message("❌ You need `Manage Server` permissions to run this command.", ephemeral=True)
+            return
+
+        await self.db.set_setting("redeem_alert_channel_id", str(channel.id))
+        embed = discord.Embed(
+            title="✅ Redemption Alert Channel Configured",
+            description=f"Automated gift code detections and redemption progress will post to {channel.mention}.",
+            colour=discord.Colour.green()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    watch_group = app_commands.Group(name="redeem-watch-channel", description="Manage channels watched for gift codes")
+
+    @watch_group.command(name="add", description="Add an announcement channel to watch for new gift codes")
+    @app_commands.describe(channel="The channel to watch")
+    async def watch_channel_add(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        is_owner = await self.bot.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_owner or is_admin):
+            await interaction.response.send_message("❌ You need `Manage Server` permissions to run this command.", ephemeral=True)
+            return
+
+        await self.db.add_watched_channel(channel.id, default_channels=utils.code_detector.WATCHED_CHANNELS)
+        perms = channel.permissions_for(channel.guild.me) if channel.guild else None
+        view_ok = perms.view_channel if perms else False
+        read_ok = perms.read_message_history if perms else False
+        perm_warning = ""
+        if not (view_ok and read_ok):
+            perm_warning = f"\n⚠️ **Warning**: Bot is missing permissions in {channel.mention}: `View Channel`={view_ok}, `Read History`={read_ok}."
+
+        embed = discord.Embed(
+            title="✅ Watched Channel Added",
+            description=f"{channel.mention} (`{channel.id}`) is now monitored for gift codes.{perm_warning}",
+            colour=discord.Colour.green()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @watch_group.command(name="remove", description="Remove a channel from watched channels")
+    @app_commands.describe(channel="The channel to stop watching")
+    async def watch_channel_remove(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        is_owner = await self.bot.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_owner or is_admin):
+            await interaction.response.send_message("❌ You need `Manage Server` permissions to run this command.", ephemeral=True)
+            return
+
+        await self.db.remove_watched_channel(channel.id, default_channels=utils.code_detector.WATCHED_CHANNELS)
+        embed = discord.Embed(
+            title="🗑️ Watched Channel Removed",
+            description=f"{channel.mention} (`{channel.id}`) was removed from watched channels.",
+            colour=discord.Colour.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @watch_group.command(name="list", description="List all channels currently watched for gift codes")
+    async def watch_channel_list(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        watched = await self.db.get_watched_channels(default_channels=utils.code_detector.WATCHED_CHANNELS)
+        lines = []
+        for cid in sorted(watched):
+            ch = self.bot.get_channel(cid)
+            if not ch:
+                try:
+                    ch = await self.bot.fetch_channel(cid)
+                except Exception:
+                    pass
+
+            if ch:
+                perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) else None
+                if perms and perms.view_channel and perms.read_message_history:
+                    status = "✅ Accessible"
+                elif perms and not perms.view_channel:
+                    status = "❌ Missing `View Channel`"
+                elif perms and not perms.read_message_history:
+                    status = "⚠️ Missing `Read History`"
+                else:
+                    status = "⚠️ Check Permissions"
+                g_name = ch.guild.name if getattr(ch, "guild", None) else "Unknown Server"
+                lines.append(f"• <#{cid}> (`{cid}`) [{g_name}]: {status}")
+            else:
+                lines.append(f"• Channel ID `{cid}`: ❌ Channel Not Found / Inaccessible")
+
+        alert_cid = await self.db.get_setting("redeem_alert_channel_id")
+        alert_str = f"<#{alert_cid}>" if alert_cid else "Auto-detected / Bot channel"
+
+        embed = discord.Embed(
+            title="📡 Watched Announcement Channels",
+            description="\n".join(lines) or "No channels configured.",
+            colour=discord.Colour.gold()
+        )
+        embed.add_field(name="📢 Results / Progress Channel", value=alert_str, inline=False)
+        await interaction.followup.send(embed=embed)
 
 
     async def send_with_webhook_fallback(

@@ -3,7 +3,7 @@ import sqlite3
 import aiosqlite
 import csv
 import io
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 
 class PlayerDatabase:
     def __init__(self, db_path: Optional[str] = None):
@@ -666,5 +666,30 @@ class PlayerDatabase:
             ''', (key, str(value)))
             await db.commit()
         return True
+
+    async def get_watched_channels(self, default_channels: Optional[Set[int]] = None) -> Set[int]:
+        """Gets set of watched announcement channel IDs, combined with defaults."""
+        raw = await self.get_setting("watched_channels")
+        channels = set(default_channels) if default_channels else set()
+        if raw:
+            for part in raw.split(','):
+                part = part.strip()
+                if part.isdigit():
+                    channels.add(int(part))
+        return channels
+
+    async def add_watched_channel(self, channel_id: int, default_channels: Optional[Set[int]] = None) -> Set[int]:
+        """Adds a channel ID to watched announcement channels."""
+        channels = await self.get_watched_channels(default_channels)
+        channels.add(int(channel_id))
+        await self.set_setting("watched_channels", ",".join(str(cid) for cid in sorted(channels)))
+        return channels
+
+    async def remove_watched_channel(self, channel_id: int, default_channels: Optional[Set[int]] = None) -> Set[int]:
+        """Removes a channel ID from watched announcement channels."""
+        channels = await self.get_watched_channels(default_channels)
+        channels.discard(int(channel_id))
+        await self.set_setting("watched_channels", ",".join(str(cid) for cid in sorted(channels)))
+        return channels
 
 
