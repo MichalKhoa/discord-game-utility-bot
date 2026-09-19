@@ -899,6 +899,59 @@ class TestAutoRedeemSystem(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(55555, watched)
 
 
+class TestPlayerSearchAndCallables(unittest.IsolatedAsyncioTestCase):
+    async def test_search_player_and_modal(self):
+        from cogs.player_manager import PlayerManager
+        from utils.modals import SearchPlayerModal
+
+        bot = MagicMock()
+        pm = PlayerManager(bot)
+        pm.db = MagicMock()
+        pm.db.search_players = AsyncMock(return_value=[
+            {"fid": "12345", "kid": "278", "name": "Arthur", "alliance": "NOR", "status": "ACTIVE", "warning_count": 0, "warning_reason": None}
+        ])
+
+        # Test search_player is directly callable
+        self.assertTrue(callable(getattr(pm, "search_player", None)))
+        mock_interaction = MagicMock()
+        mock_interaction.response.is_done.return_value = False
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock()
+
+        await pm.search_player(mock_interaction, "Arthur")
+        mock_interaction.followup.send.assert_called_once()
+        embed = mock_interaction.followup.send.call_args[1]["embed"]
+        self.assertIn("Arthur", embed.fields[0].name)
+
+        # Test SearchPlayerModal submission
+        modal = SearchPlayerModal(pm)
+        modal.query_input = MagicMock()
+        modal.query_input.value = "Arthur"
+
+        modal_interaction = MagicMock()
+        modal_interaction.response.is_done.return_value = False
+        modal_interaction.response.defer = AsyncMock()
+        modal_interaction.followup.send = AsyncMock()
+
+        await modal.on_submit(modal_interaction)
+        modal_interaction.followup.send.assert_called_once()
+
+    async def test_all_ui_cog_methods_are_callable(self):
+        from cogs.player_manager import PlayerManager
+        from cogs.code_redeem import CodeRedeem
+
+        bot = MagicMock()
+        pm = PlayerManager(bot)
+        cr = CodeRedeem(bot)
+
+        self.assertTrue(callable(getattr(pm, "search_player", None)))
+        self.assertTrue(callable(getattr(pm, "do_search_player", None)))
+        self.assertTrue(callable(getattr(pm, "player_stats", None)))
+        self.assertTrue(callable(getattr(pm, "export_csv_cmd", None)))
+        self.assertTrue(callable(getattr(pm, "sync_doc_cmd", None)))
+        self.assertTrue(callable(getattr(cr, "redeem_history", None)))
+
+
 if __name__ == '__main__':
     unittest.main()
 

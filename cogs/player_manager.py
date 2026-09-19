@@ -546,26 +546,37 @@ class PlayerManager(commands.Cog):
         modal = PlayerAddModal(self.db)
         await interaction.response.send_modal(modal)
 
-    @player_group.command(name="search", description="Search for a player by FID, Name, or Alliance")
-    @app_commands.describe(query="Name, FID, or Alliance to search")
-    async def search_player(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer(ephemeral=True)
+    async def do_search_player(self, interaction: discord.Interaction, query: str):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         results = await self.db.search_players(query, limit=10)
         if not results:
             await interaction.followup.send(f"⚠️ No players found matching `{query}`.", ephemeral=True)
             return
 
-        embed = discord.Embed(title=f"🔍 Search Results for '{query}'", colour=discord.Colour.og_blurple())
+        embed = discord.Embed(title=f"🔍 Search Results for '{query[:50]}'", colour=discord.Colour.og_blurple())
         for p in results:
             status = p.get("status", "ACTIVE")
             badge = "🟢" if status == "ACTIVE" else ("🟡" if status == "FLAGGED" else "🔴")
             warning = f"\n⚠️ Reason: `{p.get('warning_reason')}`" if p.get("warning_reason") else ""
+            name_val = f"{badge} {p.get('name') or 'Unknown'} ({p.get('alliance') or 'No Alliance'})"[:256]
+            info_val = f"• FID: `{p.get('fid')}`\n• Kingdom: `K{p.get('kid')}`\n• Status: `{status}` ({p.get('warning_count', 0)} strikes){warning}"[:1024]
             embed.add_field(
-                name=f"{badge} {p.get('name') or 'Unknown'} ({p.get('alliance') or 'No Alliance'})",
-                value=f"• FID: `{p.get('fid')}`\n• Kingdom: `K{p.get('kid')}`\n• Status: `{status}` ({p.get('warning_count', 0)} strikes){warning}",
+                name=name_val,
+                value=info_val,
                 inline=False
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @player_group.command(name="search", description="Search for a player by FID, Name, or Alliance")
+    @app_commands.describe(query="Name, FID, or Alliance to search")
+    async def search_player_cmd(self, interaction: discord.Interaction, query: str):
+        await self.do_search_player(interaction, query)
+
+    async def search_player(self, interaction: discord.Interaction, query: str):
+        """Callable helper for modals and UI views."""
+        await self.do_search_player(interaction, query)
 
     @player_group.command(name="flagged", description="View all flagged and disabled players needing attention")
     async def flagged_players(self, interaction: discord.Interaction):
@@ -600,9 +611,9 @@ class PlayerManager(commands.Cog):
         deleted_count = await self.db.prune_flagged(min_strikes=min_strikes)
         await interaction.followup.send(f"🧹 Pruned **{deleted_count}** player(s) with ≥ {min_strikes} strikes / DISABLED status.", ephemeral=True)
 
-    @player_group.command(name="stats", description="View total player statistics and kingdom breakdown")
-    async def player_stats(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    async def do_player_stats(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         stats = await self.db.get_stats()
         if stats["total"] == 0:
             embed = discord.Embed(
@@ -626,12 +637,28 @@ class PlayerManager(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @player_group.command(name="export", description="Export all player IDs as a CSV spreadsheet")
-    async def export_csv_cmd(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    @player_group.command(name="stats", description="View total player statistics and kingdom breakdown")
+    async def player_stats_cmd(self, interaction: discord.Interaction):
+        await self.do_player_stats(interaction)
+
+    async def player_stats(self, interaction: discord.Interaction):
+        """Callable helper for UI views."""
+        await self.do_player_stats(interaction)
+
+    async def do_export_csv(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         csv_data = await self.db.export_csv()
         file = discord.File(io.BytesIO(csv_data.encode('utf-8')), filename="player_ids.csv")
         await interaction.followup.send("📥 Here is the current player export:", file=file, ephemeral=True)
+
+    @player_group.command(name="export", description="Export all player IDs as a CSV spreadsheet")
+    async def export_player_csv_cmd(self, interaction: discord.Interaction):
+        await self.do_export_csv(interaction)
+
+    async def export_csv_cmd(self, interaction: discord.Interaction):
+        """Callable helper for UI views."""
+        await self.do_export_csv(interaction)
 
     @player_group.command(name="import", description="Import players from an attached CSV or text file")
     @app_commands.describe(
@@ -698,13 +725,9 @@ class PlayerManager(commands.Cog):
                 modal.default_kid_input.default = str(default_kingdom).strip()
             await interaction.response.send_modal(modal)
 
-    @player_group.command(name="sync-doc", description="Sync player list directly from a public Google Doc or text URL")
-    @app_commands.describe(
-        doc_id_or_url="Google Doc ID or public plain text URL (leave empty to use default Doc ID)",
-        default_kingdom="Default Kingdom ID (default: 278)"
-    )
-    async def sync_doc_cmd(self, interaction: discord.Interaction, doc_id_or_url: Optional[str] = None, default_kingdom: Optional[str] = "278"):
-        await interaction.response.defer(thinking=True)
+    async def do_sync_doc(self, interaction: discord.Interaction, doc_id_or_url: Optional[str] = None, default_kingdom: Optional[str] = "278"):
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         default_kid = str(default_kingdom or "278").strip()
 
         target = (doc_id_or_url or "13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE").strip()
@@ -750,6 +773,18 @@ class PlayerManager(commands.Cog):
             embed.add_field(name="Alliances", value=", ".join(f"`{a}`" for a in sorted(alliances)[:15]), inline=False)
         embed.set_footer(text="Database successfully updated from remote document.")
         await interaction.followup.send(embed=embed)
+
+    @player_group.command(name="sync-doc", description="Sync player list directly from a public Google Doc or text URL")
+    @app_commands.describe(
+        doc_id_or_url="Google Doc ID or public plain text URL (leave empty to use default Doc ID)",
+        default_kingdom="Default Kingdom ID (default: 278)"
+    )
+    async def sync_doc_app_cmd(self, interaction: discord.Interaction, doc_id_or_url: Optional[str] = None, default_kingdom: Optional[str] = "278"):
+        await self.do_sync_doc(interaction, doc_id_or_url, default_kingdom)
+
+    async def sync_doc_cmd(self, interaction: discord.Interaction, doc_id_or_url: Optional[str] = None, default_kingdom: Optional[str] = "278"):
+        """Callable helper for UI views."""
+        await self.do_sync_doc(interaction, doc_id_or_url, default_kingdom)
 
     @player_group.command(name="sync-names", description="Auto-sync in-game nicknames and kingdoms concurrently from Century Games API")
     @app_commands.describe(

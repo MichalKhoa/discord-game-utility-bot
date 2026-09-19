@@ -393,9 +393,9 @@ class CodeRedeem(commands.Cog):
     async def redeem_single(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
         await self.redeem_code_for_player(interaction, gift_code, player_id, kingdom_id)
 
-    @app_commands.command(name="redeem-history", description="Check recently redeemed gift codes and timestamps")
-    async def redeem_history(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    async def do_redeem_history(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         codes = await self.db.get_redeemed_codes(limit=25)
         if not codes:
             await interaction.followup.send("ℹ️ No redeemed codes logged in the database yet.")
@@ -409,6 +409,14 @@ class CodeRedeem(commands.Cog):
             lines.append(f"• `{code_str}` — *Redeemed on {date_str}*")
         embed.description = "\n".join(lines)
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="redeem-history", description="Check recently redeemed gift codes and timestamps")
+    async def redeem_history_cmd(self, interaction: discord.Interaction):
+        await self.do_redeem_history(interaction)
+
+    async def redeem_history(self, interaction: discord.Interaction):
+        """Callable helper for UI views."""
+        await self.do_redeem_history(interaction)
 
     @app_commands.command(
         name="redeem-scan-history",

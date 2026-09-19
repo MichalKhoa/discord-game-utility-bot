@@ -69,7 +69,15 @@ class SearchPlayerModal(discord.ui.Modal, title='Search / Edit Player'):
         self.cog = player_manager_cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.search_player(interaction, self.query_input.value.strip())
+        query = self.query_input.value.strip()
+        if hasattr(self.cog, "do_search_player"):
+            await self.cog.do_search_player(interaction, query)
+        elif callable(getattr(self.cog, "search_player", None)):
+            await self.cog.search_player(interaction, query)
+        elif hasattr(getattr(self.cog, "search_player", None), "callback"):
+            await self.cog.search_player.callback(self.cog, interaction, query)
+        else:
+            await interaction.response.send_message("❌ Player search handler not found.", ephemeral=True)
 
 
 class CustomCountdownModal(discord.ui.Modal, title='Custom Countdown'):
