@@ -71,3 +71,27 @@ class WyrEmbed(discord.Embed):
         bar_a = "█" * filled_a + "░" * (total_length - filled_a)
         bar_b = "█" * filled_b + "░" * (total_length - filled_b)
         return bar_a, bar_b, pct_a, pct_b
+
+
+class PlayerStatsEmbed(discord.Embed):
+    def __init__(self, stats: dict):
+        super().__init__(
+            title="📊 Player Registry Statistics",
+            colour=discord.Colour.gold()
+        )
+        total = stats.get("total", 0)
+        if total == 0:
+            self.description = "⚠️ No players registered in the database yet.\nUse `/player add` or click **Add Player** to register IDs."
+            return
+
+        self.add_field(name="Total Players", value=str(total), inline=True)
+        self.add_field(name="🟢 Active", value=str(stats.get("active", 0)), inline=True)
+        self.add_field(name="🟡 Flagged / 🔴 Disabled", value=f"{stats.get('flagged', 0)} / {stats.get('disabled', 0)}", inline=True)
+
+        kingdoms = stats.get("kingdoms") or []
+        k_breakdown = "\n".join(f"• Kingdom **{k.get('kid', 'N/A')}**: {k.get('count', 0)} players" for k in kingdoms)
+        self.add_field(name="Top Kingdoms", value=k_breakdown or "None", inline=False)
+
+        alliances = stats.get("alliances") or []
+        a_breakdown = "\n".join(f"• **{a.get('alliance', 'N/A')}**: {a.get('count', 0)} players" for a in alliances)
+        self.add_field(name="Top Alliances", value=a_breakdown or "None", inline=False)

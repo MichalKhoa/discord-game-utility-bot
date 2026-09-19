@@ -8,6 +8,7 @@ from typing import Optional, List
 
 from databases.player_database import PlayerDatabase
 import utils.redeem_code
+from utils.embeds import PlayerStatsEmbed
 
 
 class PlayerEditModal(discord.ui.Modal):
@@ -614,28 +615,12 @@ class PlayerManager(commands.Cog):
     async def do_player_stats(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
-        stats = await self.db.get_stats()
-        if stats["total"] == 0:
-            embed = discord.Embed(
-                title="📊 Player Registry Statistics",
-                description="⚠️ No players registered in the database yet.\nUse `/player add` or click **Add Player** to register IDs.",
-                colour=discord.Colour.gold()
-            )
+        try:
+            stats = await self.db.get_stats()
+            embed = PlayerStatsEmbed(stats)
             await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        embed = discord.Embed(title="📊 Player Registry Statistics", colour=discord.Colour.gold())
-        embed.add_field(name="Total Players", value=str(stats["total"]), inline=True)
-        embed.add_field(name="🟢 Active", value=str(stats["active"]), inline=True)
-        embed.add_field(name="🟡 Flagged / 🔴 Disabled", value=f"{stats['flagged']} / {stats['disabled']}", inline=True)
-
-        k_breakdown = "\n".join(f"• Kingdom **{k['kid']}**: {k['count']} players" for k in stats["kingdoms"])
-        embed.add_field(name="Top Kingdoms", value=k_breakdown or "None", inline=False)
-
-        a_breakdown = "\n".join(f"• **{a['alliance']}**: {a['count']} players" for a in stats["alliances"])
-        embed.add_field(name="Top Alliances", value=a_breakdown or "None", inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error fetching player statistics: `{e}`", ephemeral=True)
 
     @player_group.command(name="stats", description="View total player statistics and kingdom breakdown")
     async def player_stats_cmd(self, interaction: discord.Interaction):

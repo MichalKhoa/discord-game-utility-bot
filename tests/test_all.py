@@ -951,6 +951,46 @@ class TestPlayerSearchAndCallables(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(callable(getattr(pm, "sync_doc_cmd", None)))
         self.assertTrue(callable(getattr(cr, "redeem_history", None)))
 
+    async def test_player_stats_embed_and_button(self):
+        from utils.embeds import PlayerStatsEmbed
+        from utils.views import PlayerMenuButtons
+
+        # 1. Empty stats embed
+        empty_embed = PlayerStatsEmbed({"total": 0})
+        self.assertIn("No players registered", empty_embed.description)
+
+        # 2. Populated stats embed
+        sample_stats = {
+            "total": 10,
+            "active": 8,
+            "flagged": 1,
+            "disabled": 1,
+            "kingdoms": [{"kid": "278", "count": 10}],
+            "alliances": [{"alliance": "NOR", "count": 7}, {"alliance": "OvO", "count": 3}]
+        }
+        pop_embed = PlayerStatsEmbed(sample_stats)
+        self.assertEqual(len(pop_embed.fields), 5)
+        self.assertIn("10", pop_embed.fields[0].value)
+
+        # 3. PlayerMenuButtons stats_btn callback
+        bot = MagicMock()
+        view = PlayerMenuButtons(bot)
+        view.db = MagicMock()
+        view.db.get_stats = AsyncMock(return_value=sample_stats)
+
+        mock_inter = MagicMock()
+        mock_inter.response.is_done.return_value = False
+        mock_inter.response.defer = AsyncMock()
+        mock_inter.followup.send = AsyncMock()
+
+        # Call stats_btn callback
+        await view.stats_btn.callback(mock_inter)
+        mock_inter.response.defer.assert_called_once_with(ephemeral=True)
+        mock_inter.followup.send.assert_called_once()
+        sent_embed = mock_inter.followup.send.call_args[1]["embed"]
+        self.assertIsInstance(sent_embed, PlayerStatsEmbed)
+        self.assertIn("10", sent_embed.fields[0].value)
+
 
 if __name__ == '__main__':
     unittest.main()

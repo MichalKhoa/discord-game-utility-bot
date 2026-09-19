@@ -1,8 +1,9 @@
 import discord
 import asyncio
+import io
 from discord.ext import commands, tasks
 
-from utils.embeds import MainMenuEmbed
+from utils.embeds import MainMenuEmbed, PlayerStatsEmbed
 from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal, SearchPlayerModal
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 from databases.player_database import PlayerDatabase
@@ -151,11 +152,14 @@ class PlayerMenuButtons(discord.ui.View):
 
     @discord.ui.button(label="Stats", style=discord.ButtonStyle.secondary, emoji="📊", row=0)
     async def stats_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pm_cog = self.bot.get_cog("PlayerManager")
-        if pm_cog:
-            await pm_cog.player_stats(interaction)
-        else:
-            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        try:
+            stats = await self.db.get_stats()
+            embed = PlayerStatsEmbed(stats)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error fetching player statistics: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Import / Export", style=discord.ButtonStyle.primary, emoji="📥", row=1)
     async def import_export_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -280,11 +284,21 @@ class ImportDataView(discord.ui.View):
 
     @discord.ui.button(label="Export CSV", style=discord.ButtonStyle.secondary, emoji="📥", row=0)
     async def export_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         pm_cog = self.bot.get_cog("PlayerManager")
-        if pm_cog:
+        if pm_cog and hasattr(pm_cog, "do_export_csv"):
+            await pm_cog.do_export_csv(interaction)
+        elif pm_cog and callable(getattr(pm_cog, "export_csv_cmd", None)):
             await pm_cog.export_csv_cmd(interaction)
         else:
-            await interaction.response.send_message("PlayerManager module error", ephemeral=True)
+            try:
+                db = PlayerDatabase()
+                csv_data = await db.export_csv()
+                file = discord.File(io.BytesIO(csv_data.encode('utf-8')), filename="player_ids.csv")
+                await interaction.followup.send("📥 Here is the current player export:", file=file, ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to export CSV: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Return to Players", style=discord.ButtonStyle.secondary, emoji="◀", row=1)
     async def return_to_players(self, interaction: discord.Interaction, button: discord.ui.Button):
