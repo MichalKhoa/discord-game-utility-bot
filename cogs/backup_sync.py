@@ -273,11 +273,21 @@ class BackupSyncCog(commands.Cog):
     async def do_pull_sheet(
         self,
         interaction: discord.Interaction,
-        sheet_id: Optional[str] = None,
-        prune: bool = False
+        prune: bool = False,
+        sheet_id: Optional[str] = None
     ):
         if not interaction.response.is_done():
             await interaction.response.defer(thinking=True)
+
+        # Smart fallback: if Discord client passed "True" or "prune" into sheet_id
+        if sheet_id and isinstance(sheet_id, str):
+            clean_sid = sheet_id.strip().lower()
+            if clean_sid in ("true", "1", "yes", "prune", "prune:true"):
+                prune = True
+                sheet_id = None
+            elif clean_sid in ("false", "0", "no", "prune:false"):
+                prune = False
+                sheet_id = None
 
         try:
             creds = google_sync.get_google_credentials()
@@ -490,16 +500,16 @@ class BackupSyncCog(commands.Cog):
 
     @sheet_group.command(name="pull", description="Import edits made in Google Sheet back into the SQLite database")
     @app_commands.describe(
-        sheet_id="Optional Google Sheet ID override",
-        prune="Delete players in database that are missing from Google Sheet (prompts for confirmation)"
+        prune="Delete players in database that are missing from Google Sheet (prompts for confirmation)",
+        sheet_id="Optional Google Sheet ID override"
     )
     async def sheet_pull_cmd(
         self,
         interaction: discord.Interaction,
-        sheet_id: Optional[str] = None,
-        prune: bool = False
+        prune: bool = False,
+        sheet_id: Optional[str] = None
     ):
-        await self.do_pull_sheet(interaction, sheet_id=sheet_id, prune=prune)
+        await self.do_pull_sheet(interaction, prune=prune, sheet_id=sheet_id)
 
     @sheet_group.command(name="status", description="Show Google Sheet connection details")
     async def sheet_status_cmd(self, interaction: discord.Interaction):

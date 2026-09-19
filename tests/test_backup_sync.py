@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import google_sync
 from databases.player_database import PlayerDatabase
-from cogs.backup_sync import SheetPruneConfirmView
+from cogs.backup_sync import SheetPruneConfirmView, BackupSyncCog
 
 
 class TestGoogleSync(unittest.TestCase):
@@ -226,6 +226,24 @@ class TestGoogleSyncPrune(unittest.IsolatedAsyncioTestCase):
         await view.confirm_btn.callback(mock_interaction)
         mock_interaction.response.send_message.assert_called_once()
         self.assertIn("Only the command invoker", mock_interaction.response.send_message.call_args[0][0])
+
+
+    async def test_sheet_id_fallback_detection(self):
+        with patch.object(BackupSyncCog, "__init__", lambda self, bot: None):
+            cog = BackupSyncCog(MagicMock())
+            cog.db = self.db
+
+            mock_interaction = MagicMock()
+            mock_interaction.response.is_done.return_value = True
+            mock_interaction.followup.send = AsyncMock()
+
+            with patch("utils.google_sync.get_google_credentials", return_value=MagicMock()), \
+                 patch("utils.google_sync.import_players_from_sheet", return_value={"valid_players": [], "skipped_rows": [{"row": 2, "reason": "Missing FID"}]}):
+                await cog.do_pull_sheet(mock_interaction, sheet_id="prune:True")
+                mock_interaction.followup.send.assert_called_with(
+                    "⚠️ Google Sheet contains 0 valid player records. Pruning aborted to prevent emptying database.",
+                    ephemeral=True
+                )
 
 
 if __name__ == '__main__':
