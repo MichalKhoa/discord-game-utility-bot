@@ -1005,6 +1005,60 @@ class TestAutoRedeemSystem(unittest.IsolatedAsyncioTestCase):
             watched = await cog.db.get_watched_channels()
             self.assertNotIn(55555, watched)
 
+    def test_extract_candidate_codes_preserves_casing(self):
+        from utils.code_detector import extract_candidate_codes
+        text = "Check out the new gift code: `JPHolidaySEP` and >>Hangul2025<<!"
+        codes = extract_candidate_codes(text)
+        self.assertIn("JPHolidaySEP", codes)
+        self.assertIn("Hangul2025", codes)
+
+    def test_redeem_for_one_casing_fallback(self):
+        import utils.redeem_code as rc
+        def mock_post(endpoint, data, **kwargs):
+            if data.get("cdk") == "vip777":
+                return {"msg": "CDK NOT FOUND.", "err_code": 40014}
+            elif data.get("cdk") == "VIP777":
+                return {"msg": "SUCCESS", "err_code": 20000}
+            return {"msg": "CDK NOT FOUND.", "err_code": 40014}
+
+        with patch.object(rc, "send_signed_post", side_effect=mock_post) as m_post:
+            res = rc.redeem_for_one("111", "vip777", "278")
+            self.assertEqual(res.get("msg"), "SUCCESS")
+            self.assertEqual(m_post.call_count, 2)
+
+    def test_redeem_for_one_preserved_success_no_fallback(self):
+        import utils.redeem_code as rc
+        with patch.object(rc, "send_signed_post", return_value={"msg": "SUCCESS", "err_code": 20000}) as m_post:
+            res = rc.redeem_for_one("111", "JPHolidaySEP", "278")
+            self.assertEqual(res.get("msg"), "SUCCESS")
+            self.assertEqual(m_post.call_count, 1)
+
+    def test_redeem_for_all_casing_fallback(self):
+        import utils.redeem_code as rc
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "players.db")
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE players (fid TEXT PRIMARY KEY, kid TEXT, status TEXT)")
+            conn.execute("INSERT INTO players VALUES ('101', '278', 'ACTIVE')")
+            conn.execute("INSERT INTO players VALUES ('102', '278', 'ACTIVE')")
+            conn.commit()
+            conn.close()
+
+            calls = []
+            def mock_redeem(fid, kid, cdk, **kwargs):
+                calls.append((fid, cdk))
+                if cdk == "vip777":
+                    return "CDK NOT FOUND"
+                return "SUCCESS"
+
+            with patch.object(rc, "redeem_once", side_effect=mock_redeem):
+                result = rc.redeem_for_all("vip777", file_path=db_path, default_kingdom="278")
+                self.assertIn("Process Complete", result)
+                # Player 101 tried 'vip777' then 'VIP777', Player 102 tried 'VIP777' directly
+                self.assertEqual(calls, [('101', 'vip777'), ('101', 'VIP777'), ('102', 'VIP777')])
+
+
 
 class TestPlayerSearchAndCallables(unittest.IsolatedAsyncioTestCase):
     async def test_search_player_and_modal(self):

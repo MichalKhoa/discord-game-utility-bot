@@ -252,11 +252,11 @@ class CodeRedeem(commands.Cog):
         """Automatically initiates batch redemption for new unredeemed codes."""
         unredeemed = []
         for c in codes:
-            c_clean = c.strip().upper()
-            if not c_clean or c_clean in self.pending_or_running_codes:
+            c_clean = c.strip()
+            if not c_clean or any(c_clean.upper() == p.upper() for p in self.pending_or_running_codes):
                 continue
             is_done = await self.db.is_code_redeemed(c_clean)
-            if not is_done and c_clean not in unredeemed:
+            if not is_done and not any(c_clean.upper() == u.upper() for u in unredeemed):
                 unredeemed.append(c_clean)
 
         if not unredeemed:
@@ -332,9 +332,9 @@ class CodeRedeem(commands.Cog):
 
                     candidates = utils.code_detector.extract_candidate_codes(full_text)
                     for code in candidates:
-                        if code not in found_codes:
+                        if not any(code.upper() == fc.upper() for fc in found_codes):
                             is_logged = await self.db.is_code_redeemed(code)
-                            if not is_logged and code not in self.pending_or_running_codes:
+                            if not is_logged and not any(code.upper() == pr.upper() for pr in self.pending_or_running_codes):
                                 found_codes.append(code)
             except Exception as e:
                 print(f"DEBUG: Error scanning history in channel {ch_id}: {e}")
@@ -474,10 +474,10 @@ class CodeRedeem(commands.Cog):
                     for code in extracted:
                         is_logged = await self.db.is_code_redeemed(code)
                         if is_logged:
-                            if code not in already_redeemed_found:
+                            if not any(code.upper() == ar.upper() for ar in already_redeemed_found):
                                 already_redeemed_found.append(code)
                         else:
-                            if code not in new_codes_found:
+                            if not any(code.upper() == nc.upper() for nc in new_codes_found):
                                 new_codes_found.append(code)
 
                 channel_status.append(f"• <#{ch_id}>: ✅ Scanned {msg_count} messages")
@@ -881,7 +881,7 @@ class CodeRedeem(commands.Cog):
     async def redeem_code_for_all(self, interaction: discord.Interaction, gift_code: str):
         print(f"DEBUG: redeem_code_for_all called with {gift_code}")
         try:
-            codes = [c.strip().upper() for c in gift_code.split(';') if c.strip()]
+            codes = [c.strip() for c in gift_code.split(';') if c.strip()]
             if not codes:
                 await interaction.response.send_message("⚠️ No valid codes provided!", ephemeral=True)
                 return
@@ -934,6 +934,7 @@ class CodeRedeem(commands.Cog):
 
         results = []
         for code in codes:
+            actual_code = code
             redeem_result = await asyncio.to_thread(
                 utils.redeem_code.send_signed_post,
                 "gift_code",
@@ -941,8 +942,20 @@ class CodeRedeem(commands.Cog):
             )
 
             msg = redeem_result.get('msg', '').replace('.', '')
+            if msg == "CDK NOT FOUND" and code != code.upper():
+                upper_result = await asyncio.to_thread(
+                    utils.redeem_code.send_signed_post,
+                    "gift_code",
+                    {"fid": player_id, "cdk": code.upper(), "kid": target_kid}
+                )
+                upper_msg = upper_result.get('msg', '').replace('.', '')
+                if upper_msg != "CDK NOT FOUND":
+                    redeem_result = upper_result
+                    msg = upper_msg
+                    actual_code = code.upper()
+
             if msg == "TIMEOUT RETRY":
-                retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, code, target_kid)
+                retry_result = await asyncio.to_thread(utils.redeem_code.redeem_for_one, player_id, actual_code, target_kid)
                 if retry_result:
                     redeem_result = retry_result
                     msg = retry_result.get('msg', '').replace('.', '')
@@ -954,9 +967,9 @@ class CodeRedeem(commands.Cog):
             else:
                 result_message = utils.redeem_code.RESULT_MESSAGES.get(msg, msg or "Failed")
                 if msg in ("SUCCESS", "SAME TYPE EXCHANGE", "RECEIVED"):
-                    await self.db.log_redeemed_code(code, redeemed_by=interaction.user.id)
+                    await self.db.log_redeemed_code(actual_code, redeemed_by=interaction.user.id)
 
-            results.append(f"🎁 **Code**: `{code}` 📊 **Result**: {result_message}")
+            results.append(f"🎁 **Code**: `{actual_code}` 📊 **Result**: {result_message}")
 
         combined_results = "\n".join(results)
         await interaction.followup.send(
@@ -966,7 +979,7 @@ class CodeRedeem(commands.Cog):
     async def redeem_code_for_player(self, interaction: discord.Interaction, gift_code: str, player_id: str, kingdom_id: Optional[str] = None):
         print(f"DEBUG: redeem_code_for_player called with {gift_code} for {player_id}")
 
-        codes = [c.strip().upper() for c in gift_code.split(';') if c.strip()]
+        codes = [c.strip() for c in gift_code.split(';') if c.strip()]
         if not codes:
             await interaction.response.send_message("⚠️ No valid codes provided!", ephemeral=True)
             return

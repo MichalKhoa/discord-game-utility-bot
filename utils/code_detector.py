@@ -42,8 +42,8 @@ def extract_candidate_codes(text: str) -> List[str]:
     for pattern in EXPLICIT_PATTERNS:
         matches = re.findall(pattern, clean_text, flags=re.IGNORECASE)
         for m in matches:
-            code = m.strip().strip("`*_").upper()
-            if len(code) >= 5 and code not in IGNORED_WORDS and code not in found_codes:
+            code = m.strip().strip("`*_")
+            if len(code) >= 5 and code.upper() not in IGNORED_WORDS and not any(code.upper() == fc.upper() for fc in found_codes):
                 found_codes.append(code)
 
     return found_codes

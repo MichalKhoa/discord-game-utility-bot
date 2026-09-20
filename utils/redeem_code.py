@@ -304,13 +304,19 @@ def redeem_once(fid, kid, cdk, headers=None, proxy=None):
 
 
 def redeem_for_one(playerId, giftCode, kingdomId=DEFAULT_KINGDOM, headers=None, proxy=None):
-    """Redeem code for a single player ID with retries."""
+    """Redeem code for a single player ID with retries. Tries preserved version first, then upper if CDK NOT FOUND."""
     for attempt in range(MAX_FID_ATTEMPTS):
         if attempt > 0:
             time.sleep(RETRY_DELAY * attempt)
         res = send_signed_post("gift_code", {"fid": playerId, "cdk": giftCode, "kid": kingdomId or DEFAULT_KINGDOM}, headers=headers, proxy=proxy)
         if "error" not in res:
             status = classify(res)
+            if status == "CDK NOT FOUND" and giftCode != giftCode.upper():
+                upper_res = send_signed_post("gift_code", {"fid": playerId, "cdk": giftCode.upper(), "kid": kingdomId or DEFAULT_KINGDOM}, headers=headers, proxy=proxy)
+                if "error" not in upper_res and classify(upper_res) != "CDK NOT FOUND":
+                    res = upper_res
+                    giftCode = giftCode.upper()
+                    status = classify(res)
             if status not in ("TIMEOUT RETRY", "TOO FREQUENT"):
                 return res
     return res
@@ -389,40 +395,48 @@ def flag_player_sync(fid: str, reason: str, db_path: str = "data/players.db", th
     """Synchronously flag a player in SQLite DB during redemption batch."""
     if not os.path.exists(db_path):
         return
+    conn = None
     try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT warning_count FROM players WHERE fid = ?", (str(fid).strip(),))
-            row = cursor.fetchone()
-            if not row:
-                return
-            new_count = row[0] + 1
-            new_status = "FLAGGED"
-            if new_count >= threshold or "ROLE NOT EXIST" in reason.upper():
-                new_status = "DISABLED"
-            cursor.execute(
-                "UPDATE players SET warning_count = ?, warning_reason = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE fid = ?",
-                (new_count, reason, new_status, str(fid).strip())
-            )
-            conn.commit()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT warning_count FROM players WHERE fid = ?", (str(fid).strip(),))
+        row = cursor.fetchone()
+        if not row:
+            return
+        new_count = row[0] + 1
+        new_status = "FLAGGED"
+        if new_count >= threshold or "ROLE NOT EXIST" in reason.upper():
+            new_status = "DISABLED"
+        cursor.execute(
+            "UPDATE players SET warning_count = ?, warning_reason = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE fid = ?",
+            (new_count, reason, new_status, str(fid).strip())
+        )
+        conn.commit()
     except Exception as e:
         print(f"Error flagging player {fid} in DB: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 def unflag_player_sync(fid: str, db_path: str = "data/players.db"):
     """Synchronously reset warnings and set ACTIVE on success in SQLite DB."""
     if not os.path.exists(db_path):
         return
+    conn = None
     try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE players SET warning_count = 0, warning_reason = NULL, status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP WHERE fid = ? AND (warning_count > 0 OR status != 'ACTIVE')",
-                (str(fid).strip(),)
-            )
-            conn.commit()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE players SET warning_count = 0, warning_reason = NULL, status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP WHERE fid = ? AND (warning_count > 0 OR status != 'ACTIVE')",
+            (str(fid).strip(),)
+        )
+        conn.commit()
     except Exception:
         pass
+    finally:
+        if conn:
+            conn.close()
 
 
 def parse_player_line(line):
@@ -442,15 +456,19 @@ def load_players_from_db(db_path: str = "data/players.db") -> List[Tuple[str, st
     """Loads active (non-disabled) players from SQLite database."""
     if not os.path.exists(db_path):
         return []
+    conn = None
     try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT fid, kid FROM players WHERE status != 'DISABLED' ORDER BY CAST(fid AS INTEGER)")
-            rows = cursor.fetchall()
-            return [(str(fid), str(kid or DEFAULT_KINGDOM)) for fid, kid in rows]
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT fid, kid FROM players WHERE status != 'DISABLED' ORDER BY CAST(fid AS INTEGER)")
+        rows = cursor.fetchall()
+        return [(str(fid), str(kid or DEFAULT_KINGDOM)) for fid, kid in rows]
     except Exception as e:
         print(f"Error loading players from DB: {e}")
         return []
+    finally:
+        if conn:
+            conn.close()
 
 
 def load_players(file_path="data/players.db", default_kingdom=DEFAULT_KINGDOM):
@@ -613,6 +631,13 @@ def redeem_for_all(
 
                 status = redeem_once(fid, kid, giftCode, headers=current_headers, proxy=current_proxy)
                 counters["requests"] += 1
+
+                if status == "CDK NOT FOUND" and giftCode != giftCode.upper():
+                    upper_status = redeem_once(fid, kid, giftCode.upper(), headers=current_headers, proxy=current_proxy)
+                    counters["requests"] += 1
+                    if upper_status != "CDK NOT FOUND":
+                        giftCode = giftCode.upper()
+                        status = upper_status
 
                 if status == "TOO FREQUENT":
                     counters["rate_limited"] += 1
