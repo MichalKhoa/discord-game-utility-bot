@@ -186,23 +186,31 @@ class RussianRouletteView(discord.ui.View):
         self.mode_btn.label = "Mode: LMS (Auto)" if is_lms else "Mode: Standard"
         self.mode_btn.style = discord.ButtonStyle.danger if is_lms else discord.ButtonStyle.secondary
 
+    @staticmethod
+    def _get_danger_bar(remaining: int, total_length: int = 10) -> Tuple[str, int]:
+        pct = int(round((1.0 / max(1, remaining)) * 100))
+        filled = min(total_length, max(1, int(round((pct / 100.0) * total_length))))
+        empty = total_length - filled
+        bar = "█" * filled + "░" * empty
+        return bar, pct
+
     def get_suspense_embed(self, player: discord.Member | discord.User, action_type: str = "pull") -> Tuple[discord.Embed, Optional[discord.File]]:
         spinning_cylinder = " ".join(["💫"] * self.game.chamber_size)
         if action_type == "spin":
             title = "🌀 Spinning Cylinder..."
             desc = (
-                f"### Revolver in Motion\n"
-                f"`[ {spinning_cylinder} ]`\n"
-                f"{player.mention} spins the cylinder with full force...\n\n"
+                f"### 🎲 Cylinder in Motion\n"
+                f"`[ {spinning_cylinder} ]`\n\n"
+                f"**Contender:** {player.mention} spins the cylinder with full force...\n"
                 f"> 🎲 *Whirrrrr... clack-clack-clack...*"
             )
         else:
             title = "🎯 Cocking Hammer..."
             desc = (
-                f"### Holding Breath\n"
-                f"`[ {spinning_cylinder} ]`\n"
-                f"{player.mention} places the barrel and slowly pulls the trigger...\n\n"
-                f"> ⏱️ *Silence in the room...*"
+                f"### ⏱️ Holding Breath\n"
+                f"`[ {spinning_cylinder} ]`\n\n"
+                f"**Contender:** {player.mention} places the barrel and slowly pulls...\n"
+                f"> ⏱️ *Silence in the room... mechanism clicks into place...*"
             )
 
         embed = discord.Embed(
@@ -210,6 +218,9 @@ class RussianRouletteView(discord.ui.View):
             description=desc,
             colour=discord.Colour.gold()
         )
+        if self.bot.user:
+            embed.set_author(name="RUSSIAN ROULETTE • SUSPENSE", icon_url=self.bot.user.display_avatar.url)
+
         footer_mode = "Last Man Standing" if self.game.mode == "lms" else "Standard"
         embed.set_footer(text=f"Round {self.game.round_number} ({footer_mode}) • Calculating outcome...")
 
@@ -234,16 +245,17 @@ class RussianRouletteView(discord.ui.View):
         cylinder_bar = " ".join(cylinder)
         total_players = len(self.game.players)
         remaining = self.game.chamber_size - self.game.current_chamber + 1
+        danger_bar, lethality_pct = self._get_danger_bar(remaining)
 
         gif_file = None
         if self.game.victim:
             color = discord.Colour.red()
-            status_title = "💥 CASUALTY — ELIMINATED" if self.game.mode == "lms" and not self.game.game_over else "💥 GAME OVER — ELIMINATED"
+            status_title = f"💥 ELIMINATED — {self.game.victim.display_name.upper()}" if self.game.mode == "lms" and not self.game.game_over else "💥 GAME OVER — ELIMINATED"
             boom_path = os.path.join(ASSETS_DIR, "boom.gif")
             if os.path.exists(boom_path):
                 gif_file = discord.File(boom_path, filename="boom.gif")
         elif self.game.game_over and self.game.winner:
-            color = discord.Colour.purple()
+            color = discord.Colour.gold()
             status_title = f"👑 BATTLE ROYALE CHAMPION — {self.game.winner.display_name.upper()}"
         elif self.game.game_over:
             color = discord.Colour.red()
@@ -256,53 +268,70 @@ class RussianRouletteView(discord.ui.View):
                 color = discord.Colour.dark_gold()
                 status_title = f"👑 Russian Roulette: Last Man Standing (Round {self.game.round_number})"
             else:
-                color = discord.Colour.gold()
-                status_title = "🎲 Russian Roulette"
+                color = discord.Colour.green() if self.game.current_chamber > 1 else discord.Colour.gold()
+                status_title = "💨 CLICK! SAFE — CHAMBER EMPTY" if self.game.current_chamber > 1 else "🎲 Russian Roulette"
 
             if self.game.current_chamber > 1:
                 safe_path = os.path.join(ASSETS_DIR, "safe.gif")
                 if os.path.exists(safe_path):
                     gif_file = discord.File(safe_path, filename="safe.gif")
 
+        # Description with formatted cylinder & danger bar
+        desc_lines = [
+            "### 🎯 Cylinder Status",
+            f"`[ {cylinder_bar} ]`",
+            f"📍 **Chamber:** `{self.game.current_chamber}/{self.game.chamber_size}` • **Lethality:** `[{danger_bar}]` **{lethality_pct}%** (Odds: `1 in {remaining}`)\n",
+            f"> {self.game.last_action_msg}"
+        ]
+
         embed = discord.Embed(
             title=status_title,
-            description=(
-                f"### Cylinder Status\n"
-                f"`[ {cylinder_bar} ]`\n"
-                f"Current: Chamber `{self.game.current_chamber}/{self.game.chamber_size}` (Odds: `1 in {remaining}`)\n\n"
-                f"> {self.game.last_action_msg}"
-            ),
+            description="\n".join(desc_lines),
             colour=color
         )
+
+        if self.bot.user:
+            author_tag = f"BATTLE ROYALE • ROUND {self.game.round_number}" if self.game.mode == "lms" else "HIGH STAKES DUEL"
+            embed.set_author(name=f"RUSSIAN ROULETTE // {author_tag}", icon_url=self.bot.user.display_avatar.url)
 
         if gif_file:
             embed.set_image(url=f"attachment://{gif_file.filename}")
 
         if self.game.mode == "lms":
-            # LMS Player Rosters
             survivor_list = []
             for i, p in enumerate(self.game.alive_players):
-                pointer = "👉 " if (self.game.started and not self.game.game_over and i == (self.game.turn_index % max(1, len(self.game.alive_players)))) else "• "
-                survivor_list.append(f"{pointer}**{p.display_name}**")
+                is_turn = (self.game.started and not self.game.game_over and i == (self.game.turn_index % max(1, len(self.game.alive_players))))
+                pointer = "👉 " if is_turn else "• "
+                tag = " *(Holding Barrel)*" if is_turn else ""
+                survivor_list.append(f"{pointer}**{p.display_name}**{tag}")
 
             if self.game.winner:
-                embed.add_field(name="🏆 Winner", value=f"👑 **{self.game.winner.mention}** (Last Man Standing!)", inline=False)
+                embed.add_field(
+                    name="🏆 Tournament Champion",
+                    value=f"👑 **{self.game.winner.mention}** has outlasted all contenders and won the Battle Royale!",
+                    inline=False
+                )
             elif survivor_list:
-                embed.add_field(name=f"👥 Survivors ({len(self.game.alive_players)})", value="\n".join(survivor_list), inline=True)
+                embed.add_field(name=f"🛡️ Survivors ({len(self.game.alive_players)})", value="\n".join(survivor_list), inline=True)
 
             if self.game.eliminated_players:
                 graveyard_list = [f"💀 ~~{p.display_name}~~" for p in self.game.eliminated_players]
-                embed.add_field(name=f"🪦 Graveyard ({len(self.game.eliminated_players)})", value="\n".join(graveyard_list), inline=True)
+                embed.add_field(name=f"🪦 Fallen ({len(self.game.eliminated_players)})", value="\n".join(graveyard_list), inline=True)
         else:
-            # Standard Mode Player Roster
             if total_players > 1:
                 player_list = []
                 for i, p in enumerate(self.game.players):
-                    pointer = "👉 " if (self.game.started and not self.game.game_over and i == self.game.turn_index) else ""
-                    player_list.append(f"{pointer}`{i+1}.` {p.display_name}")
-                embed.add_field(name=f"👥 Players ({total_players})", value="\n".join(player_list), inline=False)
+                    is_turn = (self.game.started and not self.game.game_over and i == self.game.turn_index)
+                    pointer = "👉 " if is_turn else "• "
+                    tag = " *(Turn)*" if is_turn else ""
+                    player_list.append(f"{pointer}`{i+1}.` **{p.display_name}**{tag}")
+                embed.add_field(name=f"👥 Active Lobby ({total_players}/8)", value="\n".join(player_list), inline=False)
             else:
-                embed.add_field(name="👤 Mode", value="Solo Duel (Choose **Pull Trigger** or **Spin & Fire**)", inline=False)
+                embed.add_field(
+                    name="👤 Mode: Solo Duel",
+                    value="> Test your luck against the revolver.\n> Click **Pull Trigger** (sequential) or **Spin & Fire** (randomize).",
+                    inline=False
+                )
 
         mode_text = "Last Man Standing (Auto-Rounds)" if self.game.mode == "lms" else "Standard (Manual)"
         embed.set_footer(text=f"Host: {self.host.display_name} • Mode: {mode_text} • Round {self.game.round_number}")
