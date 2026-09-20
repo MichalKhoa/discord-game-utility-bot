@@ -686,6 +686,37 @@ class TestMenuViews(unittest.TestCase):
         if gif_file and hasattr(gif_file, "fp") and gif_file.fp:
             gif_file.fp.close()
 
+    def test_russian_roulette_execute_turn_animation(self):
+        import asyncio
+        from cogs.russian_roulette import RussianRouletteView
+
+        mock_bot = MagicMock()
+        mock_user = MagicMock()
+        mock_user.id = 55555
+        mock_user.mention = "@SoloPlayer"
+        mock_user.display_name = "SoloPlayer"
+
+        view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6, mode="standard")
+
+        interaction = MagicMock()
+        interaction.user = mock_user
+        interaction.response = MagicMock()
+        interaction.response.is_done = MagicMock(return_value=False)
+        interaction.response.edit_message = AsyncMock()
+        interaction.edit_original_response = AsyncMock()
+        interaction.message = MagicMock()
+        interaction.message.edit = AsyncMock()
+
+        async def run():
+            await view._execute_turn_with_animation(interaction, action_type="pull")
+
+        asyncio.run(run())
+
+        # Verify frame 1 used interaction.response.edit_message
+        self.assertTrue(interaction.response.edit_message.called)
+        # Verify frame 2 used edit_original_response (fixes webhook message bug)
+        self.assertTrue(interaction.edit_original_response.called)
+
     async def test_run_redeem_handles_forbidden_channel_send(self):
         from cogs.code_redeem import CodeRedeem
         mock_bot = MagicMock()
