@@ -607,9 +607,85 @@ class TestMenuViews(unittest.TestCase):
 
         suspense_embed, suspense_file = view.get_suspense_embed(mock_user, action_type="spin")
         self.assertIn("Spinning Cylinder", suspense_embed.title)
+        if suspense_file and hasattr(suspense_file, "fp") and suspense_file.fp:
+            suspense_file.fp.close()
 
+    def test_russian_roulette_lms_mode(self):
+        from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, ASSETS_DIR
 
-class TestCodeRedeemCog(unittest.IsolatedAsyncioTestCase):
+        # Check procedural GIF assets exist and are non-empty
+        for fname in ["spin.gif", "boom.gif", "safe.gif"]:
+            fpath = os.path.join(ASSETS_DIR, fname)
+            self.assertTrue(os.path.exists(fpath), f"Missing asset {fname}")
+            self.assertGreater(os.path.getsize(fpath), 1000, f"Asset {fname} too small")
+
+        # Setup 3 mock players
+        p1, p2, p3 = MagicMock(), MagicMock(), MagicMock()
+        for i, p in enumerate([p1, p2, p3], 1):
+            p.id = 1000 + i
+            p.mention = f"@Player{i}"
+            p.display_name = f"Player{i}"
+
+        # Initialize game in LMS mode
+        game = RussianRouletteGame(chamber_size=6, mode="lms")
+        self.assertEqual(game.mode, "lms")
+
+        # < 2 players cannot start LMS
+        game.players.append(p1)
+        self.assertFalse(game.start_lms_game())
+
+        # Add remaining players and start
+        game.players.extend([p2, p3])
+        self.assertTrue(game.start_lms_game())
+        self.assertEqual(len(game.alive_players), 3)
+        self.assertEqual(game.round_number, 1)
+
+        # Eliminate first player in Round 1
+        curr_player = game.alive_players[0]
+        # Force hit on current chamber
+        game.bullet_chamber = game.current_chamber
+        is_hit, msg = game.pull_trigger(curr_player)
+        self.assertTrue(is_hit)
+        self.assertFalse(game.game_over)
+        self.assertEqual(len(game.alive_players), 2)
+        self.assertEqual(len(game.eliminated_players), 1)
+        self.assertIn(curr_player, game.eliminated_players)
+
+        # Start Round 2 automatically
+        game.start_next_round()
+        self.assertEqual(game.round_number, 2)
+        self.assertEqual(game.current_chamber, 1)
+        self.assertIsNone(game.victim)
+
+        # Eliminate second player in Round 2
+        second_player = game.alive_players[0]
+        game.bullet_chamber = game.current_chamber
+        is_hit, msg = game.pull_trigger(second_player)
+        self.assertTrue(is_hit)
+        self.assertTrue(game.game_over)
+        self.assertEqual(len(game.alive_players), 1)
+        self.assertEqual(game.winner, game.alive_players[0])
+        self.assertIn("LAST MAN STANDING", msg)
+
+        # Test LMS View and button states
+        mock_bot = MagicMock()
+        view = RussianRouletteView(mock_bot, host=p1, chamber_size=6, mode="lms")
+        self.assertTrue(view.trigger_btn.disabled)  # disabled in LMS
+        self.assertTrue(view.start_lms_btn.disabled)  # only 1 player initially
+
+        # Join second player
+        view.game.players.append(p2)
+        view.game.alive_players.append(p2)
+        view.update_buttons()
+        self.assertFalse(view.start_lms_btn.disabled)  # enabled with 2+ players
+
+        # Embed reflects LMS status
+        embed, gif_file = view.get_embed()
+        self.assertIn("Last Man Standing", embed.title)
+        self.assertIn("Survivors", [f.name for f in embed.fields if "Survivors" in f.name][0])
+        if gif_file and hasattr(gif_file, "fp") and gif_file.fp:
+            gif_file.fp.close()
+
     async def test_run_redeem_handles_forbidden_channel_send(self):
         from cogs.code_redeem import CodeRedeem
         mock_bot = MagicMock()
