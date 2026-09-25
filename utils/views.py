@@ -130,6 +130,7 @@ class CoordleSetupView(discord.ui.View):
         self.bot = bot
         self.selected_length = 5
         self.selected_attempts = 6
+        self.selected_mode = "normal"
 
     def get_setup_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -142,6 +143,8 @@ class CoordleSetupView(discord.ui.View):
         )
         embed.add_field(name="🔡 Word Length", value=f"`{self.selected_length} Letters`", inline=True)
         embed.add_field(name="🎯 Max Attempts", value=f"`{self.selected_attempts} Attempts`", inline=True)
+        mode_text = "⚡ Blitz (Speedrun, 1.5x pts)" if self.selected_mode == "blitz" else "⏱️ Normal (Relaxed)"
+        embed.add_field(name="🎮 Mode", value=f"`{mode_text}`", inline=True)
         embed.set_footer(text="Co-ordle | Modifiable word length & attempt count")
         return embed
 
@@ -191,7 +194,8 @@ class CoordleSetupView(discord.ui.View):
             await coordle_cog.start_game(
                 interaction,
                 length=self.selected_length,
-                max_attempts=self.selected_attempts
+                max_attempts=self.selected_attempts,
+                mode=self.selected_mode
             )
         else:
             await interaction.response.send_message("❌ Coordle game module not loaded.", ephemeral=True)
@@ -203,6 +207,20 @@ class CoordleSetupView(discord.ui.View):
             await coordle_cog.show_leaderboard(interaction)
         else:
             await interaction.response.send_message("❌ Coordle game module not loaded.", ephemeral=True)
+
+    @discord.ui.button(label="Mode: Normal", style=discord.ButtonStyle.secondary, emoji="⏱️", row=2)
+    async def mode_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.selected_mode == "normal":
+            self.selected_mode = "blitz"
+            button.label = "Mode: Blitz"
+            button.emoji = "⚡"
+            button.style = discord.ButtonStyle.danger
+        else:
+            self.selected_mode = "normal"
+            button.label = "Mode: Normal"
+            button.emoji = "⏱️"
+            button.style = discord.ButtonStyle.secondary
+        await interaction.response.edit_message(embed=self.get_setup_embed(), view=self)
 
     @discord.ui.button(label="Rules", style=discord.ButtonStyle.secondary, emoji="📖", row=2)
     async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

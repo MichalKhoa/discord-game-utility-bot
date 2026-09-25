@@ -1,6 +1,7 @@
 import os
 import aiosqlite
 from typing import Optional, List, Dict, Any, Tuple
+from datetime import datetime, timedelta
 
 
 class CoordleDatabase:
@@ -26,9 +27,93 @@ class CoordleDatabase:
                     total_guesses INTEGER DEFAULT 0,
                     green_discovered INTEGER DEFAULT 0,
                     yellow_discovered INTEGER DEFAULT 0,
+                    current_streak INTEGER DEFAULT 0,
+                    max_streak INTEGER DEFAULT 0,
+                    last_daily_date TEXT DEFAULT '',
                     PRIMARY KEY (user_id, guild_id)
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS coordle_guild_channels (
+                    guild_id INTEGER PRIMARY KEY,
+                    daily_channel_id INTEGER NOT NULL
+                )
+            """)
+
+            # Soft column migrations in case table was created earlier
+            for col_def in [
+                "current_streak INTEGER DEFAULT 0",
+                "max_streak INTEGER DEFAULT 0",
+                "last_daily_date TEXT DEFAULT ''"
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE coordle_stats ADD COLUMN {col_def}")
+                except Exception:
+                    pass
+
+            await db.commit()
+
+    async def set_daily_channel(self, guild_id: int, channel_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO coordle_guild_channels (guild_id, daily_channel_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET daily_channel_id = excluded.daily_channel_id
+            """, (guild_id, channel_id))
+            await db.commit()
+
+    async def remove_daily_channel(self, guild_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM coordle_guild_channels WHERE guild_id = ?", (guild_id,))
+            await db.commit()
+
+    async def get_daily_channel(self, guild_id: int) -> Optional[int]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT daily_channel_id FROM coordle_guild_channels WHERE guild_id = ?",
+                (guild_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def get_all_daily_channels(self) -> List[Tuple[int, int]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT guild_id, daily_channel_id FROM coordle_guild_channels") as cursor:
+                rows = await cursor.fetchall()
+                return [(r[0], r[1]) for r in rows]
+
+    async def update_daily_streak(self, user_id: int, guild_id: int, today_str: str):
+        """Updates win streak for the daily puzzle."""
+        today = datetime.strptime(today_str, "%Y-%m-%d").date()
+        yesterday_str = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT current_streak, max_streak, last_daily_date FROM coordle_stats WHERE user_id = ? AND guild_id = ?",
+                (user_id, guild_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            if not row:
+                return
+
+            cur_streak, max_streak, last_date = row[0] or 0, row[1] or 0, row[2] or ""
+
+            if last_date == today_str:
+                return  # Already counted today
+
+            if last_date == yesterday_str:
+                new_streak = cur_streak + 1
+            else:
+                new_streak = 1
+
+            new_max = max(max_streak, new_streak)
+
+            await db.execute("""
+                UPDATE coordle_stats
+                SET current_streak = ?, max_streak = ?, last_daily_date = ?
+                WHERE user_id = ? AND guild_id = ?
+            """, (new_streak, new_max, today_str, user_id, guild_id))
             await db.commit()
 
     async def add_points_and_stats(
@@ -72,38 +157,45 @@ class CoordleDatabase:
     async def get_user_stats(self, user_id: int, guild_id: int) -> Optional[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT * FROM coordle_stats
-                WHERE user_id = ? AND guild_id = ?
-            """, (user_id, guild_id))
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            return dict(row)
+            async with db.execute(
+                "SELECT * FROM coordle_stats WHERE user_id = ? AND guild_id = ?",
+                (user_id, guild_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
 
     async def get_user_rank(self, user_id: int, guild_id: int) -> Tuple[Optional[int], int]:
-        """Returns (rank_1_indexed, total_players) in the guild."""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("""
-                SELECT user_id, points FROM coordle_stats
-                WHERE guild_id = ?
-                ORDER BY points DESC, words_solved DESC
-            """, (guild_id,))
-            rows = await cursor.fetchall()
-            total = len(rows)
-            for idx, r in enumerate(rows, 1):
-                if r[0] == user_id:
-                    return idx, total
-            return None, total
+            async with db.execute(
+                "SELECT COUNT(*) FROM coordle_stats WHERE guild_id = ?",
+                (guild_id,)
+            ) as cursor:
+                total_row = await cursor.fetchone()
+                total = total_row[0] if total_row else 0
+
+            if total == 0:
+                return None, 0
+
+            async with db.execute("""
+                SELECT COUNT(*) + 1 FROM coordle_stats
+                WHERE guild_id = ? AND points > (
+                    SELECT COALESCE(points, 0) FROM coordle_stats WHERE user_id = ? AND guild_id = ?
+                )
+            """, (guild_id, user_id, guild_id)) as cursor:
+                rank_row = await cursor.fetchone()
+                rank = rank_row[0] if rank_row else None
+
+            return rank, total
 
     async def get_leaderboard(self, guild_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT * FROM coordle_stats
+            async with db.execute("""
+                SELECT user_id, user_name, points, games_played, games_won, words_solved, total_guesses, current_streak
+                FROM coordle_stats
                 WHERE guild_id = ?
                 ORDER BY points DESC, words_solved DESC, games_won DESC
                 LIMIT ?
-            """, (guild_id, limit))
-            rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            """, (guild_id, limit)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]

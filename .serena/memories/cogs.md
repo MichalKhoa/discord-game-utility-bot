@@ -24,11 +24,12 @@ Covers all Discord cogs in `cogs/` directory.
 8. `cogs/roast.py`:
    - Voice/text humor roast commands.
 9. `cogs/coordle.py`:
-   - Cooperative multi-player Wordle game with custom word lengths (4-8) and attempt limits (4-12).
-   - Word lists partitioned from `data/wordle/` (answers and comprehensive guesses).
-   - Modal input validation, non-punitive invalid word feedback, and standard duplicate letter handling.
+   - Cooperative multi-player Wordle game with custom word lengths (4-8), attempt limits (4-12), and Standard / Blitz speedrun modes.
+   - Live Datamuse & Dictionary API definition lookup on victory, defeat, or surrender.
+   - 12-hour inactivity expiration, 15s turn-taking cooldown, and shareable spoiler grid button.
+   - Deterministic server-wide daily puzzles (/coordle_daily) and automated 00:00 UTC channel broadcasting.
    - Base-5 anti-sniping scoring formula: 🟨 +5, 🟩 +10, 🎯 Solve: `Letters Left to Guess × 5`, 🏆 Team Win: +10.
-   - Commands: `/coordle`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`.
+   - Commands: `/coordle`, `/coordle_daily`, `/coordle_daily_channel`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`.
 10. `cogs/menu.py`:
    - Interactive help navigation and menu panels.
 
