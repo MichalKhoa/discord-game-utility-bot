@@ -23,7 +23,13 @@ Covers all Discord cogs in `cogs/` directory.
    - Tactical battle support calculations and strategic suggestions.
 8. `cogs/roast.py`:
    - Voice/text humor roast commands.
-9. `cogs/menu.py`:
+9. `cogs/coordle.py`:
+   - Cooperative multi-player Wordle game with custom word lengths (4-8) and attempt limits (4-12).
+   - Word lists partitioned from `data/wordle/` (answers and comprehensive guesses).
+   - Modal input validation, non-punitive invalid word feedback, and standard duplicate letter handling.
+   - Base-5 anti-sniping scoring formula: 🟨 +5, 🟩 +10, 🎯 Solve: `Letters Left to Guess × 5`, 🏆 Team Win: +10.
+   - Commands: `/coordle`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`.
+10. `cogs/menu.py`:
    - Interactive help navigation and menu panels.
 
 ## Cog Development Invariants

@@ -20,6 +20,10 @@ Discord utility bot built with `discord.py` for game community management (White
   - Modular Discord menu with sub-menus for Games, Players (paginated list, modals, search, stats, export), and Utilities.
 - **Would You Rather Game (`cogs/wyr.py`, `databases/wyr_database.py`)**:
   - Interactive mini-game with SQLite question storage.
+- **Co-ordle (Cooperative Wordle) Game (`cogs/coordle.py`, `databases/coordle_database.py`)**:
+  - Server-wide cooperative Wordle with customizable word lengths (4-8) and attempt limits (4-12).
+  - Modal guess submissions, duplicate letter evaluation, and QWERTY letter tracker.
+  - Base-5 scoring system with anti-sniping solve bonus (`Letters Left × 5`), server leaderboards, career player cards, and rules embed.
 - **Roast Cog (`cogs/roast.py`)**: Voice and text entertainment features.
 
 ## Runtime & Deployment
