@@ -32,6 +32,11 @@ class MenuButtons(discord.ui.View):
             value="> Turn-based revolver luck challenge. Play solo or test your luck in a multiplayer lobby!",
             inline=False
         )
+        games_menu_panel.add_field(
+            name="🟩 Co-ordle (Wordle)",
+            value="> Cooperative word-guessing puzzle with custom word lengths and attempts!",
+            inline=False
+        )
         await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
 
     @discord.ui.button(label="Players", style=discord.ButtonStyle.primary, emoji="👥")
@@ -107,11 +112,126 @@ class GameMenuButtons(discord.ui.View):
         else:
             await interaction.response.send_message("❌ RussianRoulette game module not loaded.", ephemeral=True)
 
+    @discord.ui.button(label="Co-ordle (Wordle)", style=discord.ButtonStyle.success, emoji="🟩", row=0)
+    async def coordle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = CoordleSetupView(self.bot)
+        await interaction.response.edit_message(embed=view.get_setup_embed(), view=view)
+
     @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=1)
     async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class CoordleSetupView(discord.ui.View):
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.selected_length = 5
+        self.selected_attempts = 6
+
+    def get_setup_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="🟩 Co-ordle Setup & Settings",
+            description=(
+                "Configure your cooperative Wordle game settings below, then click **Start Co-ordle**:\n"
+                "Anyone in the channel can contribute guesses toward solving the shared puzzle!"
+            ),
+            colour=discord.Colour.green()
+        )
+        embed.add_field(name="🔡 Word Length", value=f"`{self.selected_length} Letters`", inline=True)
+        embed.add_field(name="🎯 Max Attempts", value=f"`{self.selected_attempts} Attempts`", inline=True)
+        embed.set_footer(text="Co-ordle | Modifiable word length & attempt count")
+        return embed
+
+    @discord.ui.select(
+        placeholder="Select Word Length (Default: 5)",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="4 Letters", value="4", description="Quick 4-letter puzzle"),
+            discord.SelectOption(label="5 Letters", value="5", description="Classic standard Wordle", default=True),
+            discord.SelectOption(label="6 Letters", value="6", description="6-letter challenge"),
+            discord.SelectOption(label="7 Letters", value="7", description="7-letter word puzzle"),
+            discord.SelectOption(label="8 Letters", value="8", description="Long 8-letter brain teaser"),
+        ],
+        row=0
+    )
+    async def select_length(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_length = int(select.values[0])
+        for opt in select.options:
+            opt.default = (opt.value == select.values[0])
+        await interaction.response.edit_message(embed=self.get_setup_embed(), view=self)
+
+    @discord.ui.select(
+        placeholder="Select Max Attempts (Default: 6)",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="4 Attempts", value="4", description="Hardcore difficulty"),
+            discord.SelectOption(label="5 Attempts", value="5", description="Challenging"),
+            discord.SelectOption(label="6 Attempts", value="6", description="Standard Wordle rules", default=True),
+            discord.SelectOption(label="7 Attempts", value="7", description="Extra attempt"),
+            discord.SelectOption(label="8 Attempts", value="8", description="Relaxed mode"),
+            discord.SelectOption(label="10 Attempts", value="10", description="Casual party mode"),
+        ],
+        row=1
+    )
+    async def select_attempts(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.selected_attempts = int(select.values[0])
+        for opt in select.options:
+            opt.default = (opt.value == select.values[0])
+        await interaction.response.edit_message(embed=self.get_setup_embed(), view=self)
+
+    @discord.ui.button(label="Start Co-ordle", style=discord.ButtonStyle.success, emoji="🚀", row=2)
+    async def start_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        coordle_cog = self.bot.get_cog("Coordle")
+        if coordle_cog:
+            await coordle_cog.start_game(
+                interaction,
+                length=self.selected_length,
+                max_attempts=self.selected_attempts
+            )
+        else:
+            await interaction.response.send_message("❌ Coordle game module not loaded.", ephemeral=True)
+
+    @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary, emoji="🏆", row=2)
+    async def leaderboard_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        coordle_cog = self.bot.get_cog("Coordle")
+        if coordle_cog:
+            await coordle_cog.show_leaderboard(interaction)
+        else:
+            await interaction.response.send_message("❌ Coordle game module not loaded.", ephemeral=True)
+
+    @discord.ui.button(label="Rules", style=discord.ButtonStyle.secondary, emoji="📖", row=2)
+    async def rules_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from cogs.coordle import build_rules_embed
+        await interaction.response.send_message(embed=build_rules_embed(), ephemeral=True)
+
+    @discord.ui.button(label="Return", style=discord.ButtonStyle.secondary, emoji="◀", row=2)
+    async def return_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        games_menu_panel = discord.Embed(
+            title="🎮 Interactive Party & Mini-Games",
+            description="Choose a mini-game to play with your friends or alliance members:",
+            colour=discord.Colour.og_blurple()
+        )
+        games_menu_panel.add_field(
+            name="🤷 Would you rather ...",
+            value="> Pick between impossible scenarios and see live community vote splits.",
+            inline=False
+        )
+        games_menu_panel.add_field(
+            name="🎲 Russian Roulette",
+            value="> Turn-based revolver luck challenge. Play solo or test your luck in a multiplayer lobby!",
+            inline=False
+        )
+        games_menu_panel.add_field(
+            name="🟩 Co-ordle (Wordle)",
+            value="> Cooperative word-guessing puzzle with custom word lengths and attempts!",
+            inline=False
+        )
+        await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
 
 
 class PlayerMenuButtons(discord.ui.View):
