@@ -39,6 +39,13 @@ class CoordleDatabase:
                     daily_channel_id INTEGER NOT NULL
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS coordle_definitions (
+                    word TEXT PRIMARY KEY,
+                    definition TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
             # Soft column migrations in case table was created earlier
             for col_def in [
@@ -51,6 +58,26 @@ class CoordleDatabase:
                 except Exception:
                     pass
 
+            await db.commit()
+
+    async def get_definition(self, word: str) -> Optional[str]:
+        """Retrieves a cached dictionary definition from SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT definition FROM coordle_definitions WHERE word = ?",
+                (word.lower().strip(),)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+    async def save_definition(self, word: str, definition: str):
+        """Persists a dictionary definition into SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO coordle_definitions (word, definition)
+                VALUES (?, ?)
+                ON CONFLICT(word) DO UPDATE SET definition = excluded.definition
+            """, (word.lower().strip(), definition.strip()))
             await db.commit()
 
     async def set_daily_channel(self, guild_id: int, channel_id: int):

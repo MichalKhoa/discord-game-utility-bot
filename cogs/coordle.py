@@ -58,11 +58,29 @@ def get_daily_word(guild_id: int, date_str: str) -> str:
     return answers[seed_val % len(answers)].upper()
 
 
-async def fetch_word_definition(word: str) -> Optional[str]:
-    """Fetches a concise one-line English definition for the given word."""
+async def fetch_word_definition(word: str, db: Optional[CoordleDatabase] = None) -> Optional[str]:
+    """
+    Fetches a concise one-line English definition for the given word.
+    2-Tier Caching:
+    1. RAM Cache (0ms)
+    2. SQLite Persistent DB (0.1ms)
+    3. External APIs (Datamuse & Free Dictionary API) -> persisted to DB & RAM
+    """
     w = word.lower().strip()
     if w in DEFINITION_CACHE:
         return DEFINITION_CACHE[w]
+
+    # Check SQLite Persistent Cache
+    if db:
+        try:
+            cached_db = await db.get_definition(w)
+            if cached_db:
+                DEFINITION_CACHE[w] = cached_db
+                return cached_db
+        except Exception:
+            pass
+
+    result: Optional[str] = None
 
     # 1. Try Datamuse API (fast, reliable dictionary metadata)
     try:
@@ -80,30 +98,36 @@ async def fetch_word_definition(word: str) -> Optional[str]:
                             result = f"{prefix}{text.strip()}"
                         else:
                             result = raw_def.strip()
-                        DEFINITION_CACHE[w] = result
-                        return result
     except Exception:
         pass
 
-    # 2. Fallback to Free Dictionary API
-    try:
-        url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{w}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data and isinstance(data, list) and "meanings" in data[0]:
-                        meaning = data[0]["meanings"][0]
-                        part = meaning.get("partOfSpeech", "")
-                        defs = meaning.get("definitions", [])
-                        if defs and "definition" in defs[0]:
-                            text = defs[0]["definition"]
-                            prefix = f"*({part})* " if part else ""
-                            result = f"{prefix}{text.strip()}"
-                            DEFINITION_CACHE[w] = result
-                            return result
-    except Exception:
-        pass
+    # 2. Fallback to Free Dictionary API if Datamuse returned empty
+    if not result:
+        try:
+            url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{w}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and isinstance(data, list) and "meanings" in data[0]:
+                            meaning = data[0]["meanings"][0]
+                            part = meaning.get("partOfSpeech", "")
+                            defs = meaning.get("definitions", [])
+                            if defs and "definition" in defs[0]:
+                                text = defs[0]["definition"]
+                                prefix = f"*({part})* " if part else ""
+                                result = f"{prefix}{text.strip()}"
+        except Exception:
+            pass
+
+    if result:
+        DEFINITION_CACHE[w] = result
+        if db:
+            try:
+                await db.save_definition(w, result)
+            except Exception as e:
+                print(f"Failed to persist definition for '{w}' to SQLite: {e}")
+        return result
 
     return None
 
@@ -248,10 +272,10 @@ class CoordleGame:
         # Keyboard letter tracker: char -> 'G', 'Y', 'B'
         self.letter_status: Dict[str, str] = {}
 
-    async def ensure_definition(self):
+    async def ensure_definition(self, db: Optional[CoordleDatabase] = None):
         """Fetches and caches the definition for target word upon game conclusion."""
         if not self.definition:
-            self.definition = await fetch_word_definition(self.target_word)
+            self.definition = await fetch_word_definition(self.target_word, db=db)
 
     def generate_share_text(self) -> str:
         """Generates standard Wordle emoji spoiler grid for sharing."""
@@ -436,7 +460,7 @@ class CoordleGuessModal(discord.ui.Modal):
 
         # If game concluded, ensure definition and save stats asynchronously
         if self.game_view.game.game_over:
-            await self.game_view.game.ensure_definition()
+            await self.game_view.game.ensure_definition(db=self.game_view.cog.db if self.game_view.cog else None)
             if self.game_view.cog:
                 asyncio.create_task(self.game_view.save_stats())
 
@@ -471,7 +495,7 @@ class CoordleGameView(discord.ui.View):
                 if remaining <= 0 and not self.game.game_over:
                     self.game.game_over = True
                     self.game.expired = True
-                    await self.game.ensure_definition()
+                    await self.game.ensure_definition(db=self.cog.db if self.cog else None)
                     if self.cog:
                         await self.save_stats()
                     self.update_buttons()
@@ -497,7 +521,7 @@ class CoordleGameView(discord.ui.View):
         if not self.game.game_over:
             self.game.game_over = True
             self.game.expired = True
-            await self.game.ensure_definition()
+            await self.game.ensure_definition(db=self.cog.db if self.cog else None)
             if self.cog:
                 await self.save_stats()
             self.update_buttons()
@@ -669,7 +693,7 @@ class CoordleGameView(discord.ui.View):
         self.game.surrendered = True
         if self.blitz_task:
             self.blitz_task.cancel()
-        await self.game.ensure_definition()
+        await self.game.ensure_definition(db=self.cog.db if self.cog else None)
         if self.cog:
             asyncio.create_task(self.save_stats())
         self.update_buttons()
