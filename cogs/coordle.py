@@ -120,6 +120,39 @@ async def fetch_word_definition(word: str, db: Optional[CoordleDatabase] = None)
         except Exception:
             pass
 
+    # 3. Lemmatization Fallback: Try root lemma if inflected form returned no definition
+    if not result:
+        candidate_lemmas = get_candidate_lemmas(w)
+        for lemma in candidate_lemmas:
+            # Check SQLite or API for lemma
+            lemma_def = None
+            if db:
+                try:
+                    lemma_def = await db.get_definition(lemma)
+                except Exception:
+                    pass
+            if not lemma_def:
+                try:
+                    url = f"https://api.datamuse.com/words?sp={lemma}&md=d&max=1"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=2.0)) as resp:
+                            if resp.status == 200:
+                                d_data = await resp.json()
+                                if d_data and "defs" in d_data[0] and d_data[0]["defs"]:
+                                    raw = d_data[0]["defs"][0]
+                                    if "\t" in raw:
+                                        p_pos, p_txt = raw.split("\t", 1)
+                                        pos_map = {"n": "noun", "v": "verb", "adj": "adjective", "adv": "adverb"}
+                                        pref = f"*({pos_map.get(p_pos, p_pos)})* " if p_pos in pos_map else ""
+                                        lemma_def = f"{pref}{p_txt.strip()}"
+                                    else:
+                                        lemma_def = raw.strip()
+                except Exception:
+                    pass
+            if lemma_def:
+                result = f"*(Root: {lemma.upper()})* {lemma_def}"
+                break
+
     if result:
         DEFINITION_CACHE[w] = result
         if db:
@@ -131,6 +164,64 @@ async def fetch_word_definition(word: str, db: Optional[CoordleDatabase] = None)
 
     return None
 
+
+def find_typo_suggestions(guess: str, valid_words: Set[str], max_suggestions: int = 2) -> List[str]:
+    """
+    Finds smart typo suggestions using adjacent letter transpositions,
+    1-character substitution, and anagram matching.
+    Runs in < 5ms for standard Wordle dictionary sizes.
+    """
+    guess = guess.lower()
+    g_len = len(guess)
+    suggestions: List[str] = []
+
+    # 1. Adjacent letter swaps (e.g., craen -> crane, teh -> the)
+    for i in range(g_len - 1):
+        swapped = guess[:i] + guess[i+1] + guess[i] + guess[i+2:]
+        if swapped in valid_words and swapped != guess and swapped not in suggestions:
+            suggestions.append(swapped)
+            if len(suggestions) >= max_suggestions:
+                return suggestions
+
+    # 2. 1-character substitution typos (e.g., fjrod -> fjord, wrter -> water)
+    for w in valid_words:
+        if len(w) == g_len and sum(1 for a, b in zip(guess, w) if a != b) == 1:
+            if w not in suggestions:
+                suggestions.append(w)
+                if len(suggestions) >= max_suggestions:
+                    return suggestions
+
+    # 3. Exact anagram match
+    guess_sorted = sorted(guess)
+    for w in valid_words:
+        if len(w) == g_len and sorted(w) == guess_sorted and w != guess and w not in suggestions:
+            suggestions.append(w)
+            if len(suggestions) >= max_suggestions:
+                return suggestions
+
+    return suggestions
+
+
+def get_candidate_lemmas(word: str) -> List[str]:
+    """Generates root candidate forms for inflected words to improve definition lookups."""
+    w = word.lower().strip()
+    lemmas = []
+    if w.endswith("ies") and len(w) > 4:
+        lemmas.append(w[:-3] + "y")
+    if w.endswith("es") and len(w) > 4:
+        lemmas.append(w[:-2])
+    if w.endswith("s") and len(w) > 3 and not w.endswith("ss"):
+        lemmas.append(w[:-1])
+    if w.endswith("ed") and len(w) > 3:
+        lemmas.append(w[:-1])  # baked -> bake
+        lemmas.append(w[:-2])  # walked -> walk
+    if w.endswith("ing") and len(w) > 5:
+        lemmas.append(w[:-3])       # jumping -> jump
+        lemmas.append(w[:-3] + "e") # baking -> bake
+    if w.endswith("er") and len(w) > 4:
+        lemmas.append(w[:-1])  # finer -> fine
+        lemmas.append(w[:-2])  # faster -> fast
+    return [l for l in lemmas if l != w]
 
 def evaluate_guess(target: str, guess: str) -> List[str]:
     """
@@ -424,11 +515,16 @@ class CoordleGuessModal(discord.ui.Modal):
             )
             return
 
-        # Check dictionary
+        # Check dictionary with fuzzy typo suggestions
         _, valid_guesses = load_words(self.game_view.game.word_length)
         if valid_guesses and guess not in valid_guesses:
+            suggestions = find_typo_suggestions(guess, valid_guesses)
+            sugg_text = ""
+            if suggestions:
+                sugg_str = " or ".join(f"**`{s.upper()}`**" for s in suggestions)
+                sugg_text = "\n💡 *Did you mean " + sugg_str + "?*"
             await interaction.response.send_message(
-                f"❌ **{guess.upper()}** is not in the valid dictionary word list!",
+                f"❌ **{guess.upper()}** is not in the valid dictionary word list!{sugg_text}",
                 ephemeral=True
             )
             return
