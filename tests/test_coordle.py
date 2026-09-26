@@ -1,6 +1,6 @@
 import io
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 import discord
 
 from cogs.coordle import CoordleGame, CoordleGameView, evaluate_guess
@@ -146,6 +146,116 @@ class TestCoordleGameAndBoard(unittest.IsolatedAsyncioTestCase):
 
         embed = view.get_embed(has_image=False)
         self.assertIn("💀 **Solution**: **`PLANT`**", embed.description)
+
+    async def test_setup_view_attempts_options(self):
+        from utils.views import CoordleSetupView
+        mock_bot = MagicMock()
+        setup_view = CoordleSetupView(mock_bot)
+        # Verify select_attempts exists with 10 options spanning 3 to 15 attempts
+        attempts_select = setup_view.select_attempts
+        self.assertEqual(len(attempts_select.options), 10)
+        values = [int(opt.value) for opt in attempts_select.options]
+        self.assertEqual(values, [3, 4, 5, 6, 7, 8, 9, 10, 12, 15])
+
+        # Test selecting 3 attempts
+        mock_interaction = MagicMock()
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.edit_message = AsyncMock()
+        attempts_select._values = ["3"]
+        await setup_view.select_attempts.callback(mock_interaction)
+        self.assertEqual(setup_view.selected_attempts, 3)
+
+    async def test_leaderboard_database_sorting_and_pagination(self):
+        import tempfile
+        import os
+        from databases.coordle_database import CoordleDatabase
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_coordle.db")
+            db = CoordleDatabase(db_path)
+            await db.init_db()
+
+            guild_id = 99999
+            # Add 3 players with distinct metrics
+            # Player 1: high points (300), 1 solve, 1 win
+            await db.add_points_and_stats(101, guild_id, "Alice", points=300, game_played=True, game_won=True, word_solved=True)
+            # Player 2: moderate points (150), 5 solves, 1 win, streak 4
+            await db.add_points_and_stats(102, guild_id, "Bob", points=150, game_played=True, game_won=True, word_solved=True)
+            for _ in range(4):
+                await db.add_points_and_stats(102, guild_id, "Bob", word_solved=True)
+            await db.update_daily_streak(102, guild_id, "2026-09-24")
+            await db.update_daily_streak(102, guild_id, "2026-09-25")
+            await db.update_daily_streak(102, guild_id, "2026-09-26")
+            await db.update_daily_streak(102, guild_id, "2026-09-27")
+            # Player 3: low points (50), 1 solve, 5 wins
+            await db.add_points_and_stats(103, guild_id, "Charlie", points=50, game_played=True, game_won=True, word_solved=True)
+            for _ in range(4):
+                await db.add_points_and_stats(103, guild_id, "Charlie", game_played=True, game_won=True)
+
+            # Test total players
+            total = await db.get_total_players(guild_id)
+            self.assertEqual(total, 3)
+
+            # Test sorted by points: Alice (300) > Bob (150) > Charlie (50)
+            lb_points = await db.get_leaderboard(guild_id, sort_by="points")
+            self.assertEqual([p["user_name"] for p in lb_points], ["Alice", "Bob", "Charlie"])
+
+            # Test sorted by solves: Bob (5) > Alice (1) > Charlie (1)
+            lb_solves = await db.get_leaderboard(guild_id, sort_by="solves")
+            self.assertEqual(lb_solves[0]["user_name"], "Bob")
+
+            # Test sorted by wins: Charlie (5) > Bob (1) > Alice (1)
+            lb_wins = await db.get_leaderboard(guild_id, sort_by="wins")
+            self.assertEqual(lb_wins[0]["user_name"], "Charlie")
+
+            # Test sorted by streak: Bob (4) > others
+            lb_streak = await db.get_leaderboard(guild_id, sort_by="streak")
+            self.assertEqual(lb_streak[0]["user_name"], "Bob")
+            self.assertEqual(lb_streak[0]["current_streak"], 4)
+
+            # Test ranks across categories
+            rank_bob_pts, _ = await db.get_user_rank(102, guild_id, sort_by="points")
+            self.assertEqual(rank_bob_pts, 2)
+            rank_bob_solves, _ = await db.get_user_rank(102, guild_id, sort_by="solves")
+            self.assertEqual(rank_bob_solves, 1)
+
+    async def test_leaderboard_view_rendering_and_interaction(self):
+        import tempfile
+        import os
+        from databases.coordle_database import CoordleDatabase
+        from cogs.coordle import CoordleLeaderboardView
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_coordle_view.db")
+            db = CoordleDatabase(db_path)
+            await db.init_db()
+
+            guild_id = 12345
+            for i in range(1, 6):
+                await db.add_points_and_stats(i, guild_id, f"Player{i}", points=i * 100, game_played=True, game_won=True, word_solved=True)
+
+            view = CoordleLeaderboardView(db=db, guild_id=guild_id, current_user_id=5)
+            embed = await view.build_embed()
+
+            # Verify podium medals
+            self.assertIn("🥇 **1st Place**: **Player5**", embed.description)
+            self.assertIn("🥈 **2nd Place**: **Player4**", embed.description)
+            self.assertIn("🥉 **3rd Place**: **Player3**", embed.description)
+            self.assertIn("4️⃣ **Player2**", embed.description)
+
+            # Verify personal standing card
+            self.assertTrue(any("Your Server Standing" in f.name for f in embed.fields))
+            user_field = [f for f in embed.fields if "Your Server Standing" in f.name][0]
+            self.assertIn("Rank**: `#1` of `5`", user_field.value)
+
+            # Test category switch
+            mock_select_interaction = MagicMock()
+            mock_select_interaction.response = MagicMock()
+            mock_select_interaction.response.edit_message = AsyncMock()
+            view.category_select._values = ["solves"]
+            await view.category_select.callback(mock_select_interaction)
+            self.assertEqual(view.category, "solves")
+            self.assertEqual(view.page, 0)
 
 
 if __name__ == "__main__":

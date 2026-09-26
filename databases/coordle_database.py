@@ -191,38 +191,65 @@ class CoordleDatabase:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
-    async def get_user_rank(self, user_id: int, guild_id: int) -> Tuple[Optional[int], int]:
+    async def get_total_players(self, guild_id: int) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
                 "SELECT COUNT(*) FROM coordle_stats WHERE guild_id = ?",
                 (guild_id,)
             ) as cursor:
-                total_row = await cursor.fetchone()
-                total = total_row[0] if total_row else 0
+                row = await cursor.fetchone()
+                return row[0] if row else 0
 
-            if total == 0:
-                return None, 0
+    async def get_user_rank(self, user_id: int, guild_id: int, sort_by: str = "points") -> Tuple[Optional[int], int]:
+        total = await self.get_total_players(guild_id)
+        if total == 0:
+            return None, 0
 
-            async with db.execute("""
+        metric_col = "points"
+        if sort_by == "solves":
+            metric_col = "words_solved"
+        elif sort_by == "wins":
+            metric_col = "games_won"
+        elif sort_by == "streak":
+            metric_col = "current_streak"
+
+        async with aiosqlite.connect(self.db_path) as db:
+            query = f"""
                 SELECT COUNT(*) + 1 FROM coordle_stats
-                WHERE guild_id = ? AND points > (
-                    SELECT COALESCE(points, 0) FROM coordle_stats WHERE user_id = ? AND guild_id = ?
+                WHERE guild_id = ? AND {metric_col} > (
+                    SELECT COALESCE({metric_col}, 0) FROM coordle_stats WHERE user_id = ? AND guild_id = ?
                 )
-            """, (guild_id, user_id, guild_id)) as cursor:
+            """
+            async with db.execute(query, (guild_id, user_id, guild_id)) as cursor:
                 rank_row = await cursor.fetchone()
                 rank = rank_row[0] if rank_row else None
 
             return rank, total
 
-    async def get_leaderboard(self, guild_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_leaderboard(
+        self,
+        guild_id: int,
+        sort_by: str = "points",
+        limit: int = 10,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        order_clause = "points DESC, words_solved DESC, games_won DESC"
+        if sort_by == "solves":
+            order_clause = "words_solved DESC, points DESC, games_won DESC"
+        elif sort_by == "wins":
+            order_clause = "games_won DESC, points DESC, words_solved DESC"
+        elif sort_by == "streak":
+            order_clause = "current_streak DESC, max_streak DESC, points DESC"
+
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT user_id, user_name, points, games_played, games_won, words_solved, total_guesses, current_streak
+            query = f"""
+                SELECT user_id, user_name, points, games_played, games_won, words_solved, total_guesses, current_streak, max_streak
                 FROM coordle_stats
                 WHERE guild_id = ?
-                ORDER BY points DESC, words_solved DESC, games_won DESC
-                LIMIT ?
-            """, (guild_id, limit)) as cursor:
+                ORDER BY {order_clause}
+                LIMIT ? OFFSET ?
+            """
+            async with db.execute(query, (guild_id, limit, offset)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]

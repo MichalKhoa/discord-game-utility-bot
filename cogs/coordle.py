@@ -918,6 +918,206 @@ class CoordleGameView(discord.ui.View):
         )
 
 
+class CoordleLeaderboardView(discord.ui.View):
+    CATEGORY_META = {
+        "points": {
+            "title": "🏆 Co-ordle Leaderboard — All-Time Points",
+            "color": discord.Colour.gold(),
+            "badge": "Points",
+            "format": lambda e: f"**`{e.get('points', 0):,} pts`**",
+        },
+        "solves": {
+            "title": "🎯 Co-ordle Leaderboard — Top Solvers",
+            "color": discord.Colour.green(),
+            "badge": "Words Solved",
+            "format": lambda e: f"**`{e.get('words_solved', 0):,} Solves`** ({e.get('points', 0):,} pts)",
+        },
+        "wins": {
+            "title": "🏅 Co-ordle Leaderboard — Most Wins",
+            "color": discord.Colour.og_blurple(),
+            "badge": "Games Won",
+            "format": lambda e: f"**`{e.get('games_won', 0):,} Wins`**",
+        },
+        "streak": {
+            "title": "🔥 Co-ordle Leaderboard — Daily Streaks",
+            "color": discord.Colour.orange(),
+            "badge": "Daily Streak",
+            "format": lambda e: f"**`🔥 {e.get('current_streak', 0)} Streak`** (Max: `{e.get('max_streak', 0)}`)",
+        },
+    }
+
+    def __init__(self, db: CoordleDatabase, guild_id: int, current_user_id: int):
+        super().__init__(timeout=1800)  # 30 minutes
+        self.db = db
+        self.guild_id = guild_id
+        self.current_user_id = current_user_id
+        self.category = "points"
+        self.page = 0
+        self.per_page = 8
+        self.total_players = 0
+        self.max_pages = 1
+        self.message: Optional[discord.Message] = None
+
+    async def initialize(self):
+        await self.refresh_data()
+        self.update_buttons()
+
+    async def refresh_data(self):
+        self.total_players = await self.db.get_total_players(self.guild_id)
+        self.max_pages = max(1, (self.total_players + self.per_page - 1) // self.per_page)
+        if self.page >= self.max_pages:
+            self.page = max(0, self.max_pages - 1)
+
+    def update_buttons(self):
+        self.first_btn.disabled = (self.page <= 0)
+        self.prev_btn.disabled = (self.page <= 0)
+        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+        self.last_btn.disabled = (self.page >= self.max_pages - 1)
+
+    async def build_embed(self) -> discord.Embed:
+        await self.refresh_data()
+        meta = self.CATEGORY_META.get(self.category, self.CATEGORY_META["points"])
+        offset = self.page * self.per_page
+        entries = await self.db.get_leaderboard(
+            guild_id=self.guild_id,
+            sort_by=self.category,
+            limit=self.per_page,
+            offset=offset
+        )
+        user_rank, _ = await self.db.get_user_rank(self.current_user_id, self.guild_id, sort_by=self.category)
+        user_stats = await self.db.get_user_stats(self.current_user_id, self.guild_id)
+
+        embed = discord.Embed(
+            title=meta["title"],
+            colour=meta["color"]
+        )
+
+        embed.description = (
+            "Compete in cooperative Wordle games to earn points and climb the rankings!\n"
+            "`🟩 +10 pts` • `🟨 +5 pts` • `🎯 Solve: Left×5` • `🏆 Win: +10 pts`\n\n"
+        )
+
+        if not entries:
+            embed.description += "*No player records found for this server yet! Start a match with `/coordle`.*"
+        else:
+            lines = []
+            num_emojis = {4: "4️⃣", 5: "5️⃣", 6: "6️⃣", 7: "7️⃣", 8: "8️⃣", 9: "9️⃣", 10: "🔟"}
+            for idx_in_page, entry in enumerate(entries):
+                rank_num = offset + idx_in_page + 1
+                highlight = meta["format"](entry)
+                played = entry.get("games_played", 0)
+                won = entry.get("games_won", 0)
+                win_pct = (won / played * 100) if played > 0 else 0.0
+
+                if rank_num == 1:
+                    lines.append(
+                        f"🥇 **1st Place**: **{entry['user_name']}** — {highlight}\n"
+                        f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{won}` ({win_pct:.0f}%) | 🧩 Guesses: `{entry['total_guesses']}` | 🔥 Streak: `{entry.get('current_streak', 0)}`"
+                    )
+                elif rank_num == 2:
+                    lines.append(
+                        f"🥈 **2nd Place**: **{entry['user_name']}** — {highlight}\n"
+                        f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{won}` ({win_pct:.0f}%) | 🧩 Guesses: `{entry['total_guesses']}` | 🔥 Streak: `{entry.get('current_streak', 0)}`"
+                    )
+                elif rank_num == 3:
+                    lines.append(
+                        f"🥉 **3rd Place**: **{entry['user_name']}** — {highlight}\n"
+                        f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{won}` ({win_pct:.0f}%) | 🧩 Guesses: `{entry['total_guesses']}` | 🔥 Streak: `{entry.get('current_streak', 0)}`"
+                    )
+                else:
+                    badge_num = num_emojis.get(rank_num, f"`#{rank_num:2d}`")
+                    lines.append(
+                        f"{badge_num} **{entry['user_name']}** — {highlight} "
+                        f"(🎯 `{entry['words_solved']}` • 🏆 `{won}` • 🔥 `{entry.get('current_streak', 0)}`)"
+                    )
+
+            embed.description += "\n\n".join(lines)
+
+        if user_stats:
+            u_played = user_stats.get("games_played", 0)
+            u_won = user_stats.get("games_won", 0)
+            u_win_pct = (u_won / u_played * 100) if u_played > 0 else 0.0
+            rank_str = f"#{user_rank}" if user_rank else "Unranked"
+            embed.add_field(
+                name="👤 Your Server Standing",
+                value=(
+                    f"**Rank**: `{rank_str}` of `{self.total_players}` | **Points**: `{user_stats['points']:,} pts`\n"
+                    f"🎯 Solves: `{user_stats['words_solved']}` | 🏆 Wins: `{u_won}` ({u_win_pct:.0f}%) | 🔥 Streak: `{user_stats.get('current_streak', 0)}`"
+                ),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="👤 Your Server Standing",
+                value="*You haven't played any Co-ordle games on this server yet! Start with `/coordle`.*",
+                inline=False
+            )
+
+        embed.set_footer(text=f"Page {self.page + 1}/{max(1, self.max_pages)} • {self.total_players} total players • Use dropdown to change sort")
+        self.update_buttons()
+        return embed
+
+    @discord.ui.select(
+        placeholder="Select Leaderboard Category",
+        min_values=1,
+        max_values=1,
+        options=[
+            discord.SelectOption(label="All-Time Points", value="points", description="Rank by total points accumulated", emoji="🏆", default=True),
+            discord.SelectOption(label="Words Solved", value="solves", description="Rank by mystery words solved", emoji="🎯"),
+            discord.SelectOption(label="Cooperative Wins", value="wins", description="Rank by team game victories", emoji="🏅"),
+            discord.SelectOption(label="Daily Win Streaks", value="streak", description="Rank by active daily Wordle streak", emoji="🔥"),
+        ],
+        row=0
+    )
+    async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.category = select.values[0]
+        for opt in select.options:
+            opt.default = (opt.value == self.category)
+        self.page = 0
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="First", emoji="⏮️", style=discord.ButtonStyle.secondary, row=1)
+    async def first_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = 0
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Prev", emoji="◀", style=discord.ButtonStyle.primary, row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Next", emoji="▶", style=discord.ButtonStyle.primary, row=1)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_pages - 1:
+            self.page += 1
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Last", emoji="⏭️", style=discord.ButtonStyle.secondary, row=1)
+    async def last_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.max_pages - 1)
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = await self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
 class Coordle(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -976,7 +1176,7 @@ class Coordle(commands.Cog):
         is_daily: bool = False
     ):
         length = max(4, min(8, length))
-        max_attempts = max(4, min(12, max_attempts))
+        max_attempts = max(3, min(15, max_attempts))
         guild_id = interaction.guild_id or (interaction.guild.id if interaction.guild else 0)
 
         if is_daily:
@@ -1034,42 +1234,18 @@ class Coordle(commands.Cog):
 
     async def show_leaderboard(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id or (interaction.guild.id if interaction.guild else 0)
-        leaderboard = await self.db.get_leaderboard(guild_id, limit=10)
-        user_rank, total_players = await self.db.get_user_rank(interaction.user.id, guild_id)
-
-        embed = discord.Embed(
-            title="🏆 Co-ordle Server Leaderboard",
-            description=(
-                "Compete in cooperative Wordle games to earn points and climb the rankings!\n\n"
-                "**Scoring:** 🟨 `+5` | 🟩 `+10` | 🎯 Solve: `Letters Left × 5` | 🏆 Team Win: `+10`\n"
-            ),
-            colour=discord.Colour.gold()
-        )
-
-        medals = ["🥇", "🥈", "🥉"]
-
-        if not leaderboard:
-            embed.description += "\n*No games have been recorded yet! Start one with `/coordle` or through `/menu`.*"
-        else:
-            lines = []
-            for idx, entry in enumerate(leaderboard, 1):
-                icon = medals[idx - 1] if idx <= 3 else f"`#{idx:2d}`"
-                streak = f" | 🔥 Streak: `{entry['current_streak']}`" if entry.get("current_streak") else ""
-                lines.append(
-                    f"{icon} **{entry['user_name']}** — **`{entry['points']:,} pts`**\n"
-                    f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{entry['games_won']}` | 🧩 Guesses: `{entry['total_guesses']}`{streak}"
-                )
-            embed.description += "\n\n".join(lines)
-
-        footer_text = f"Total Players: {total_players}"
-        if user_rank:
-            footer_text += f" | Your Rank: #{user_rank}"
-        embed.set_footer(text=footer_text)
+        view = CoordleLeaderboardView(db=self.db, guild_id=guild_id, current_user_id=interaction.user.id)
+        embed = await view.build_embed()
 
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed)
+            msg = await interaction.followup.send(embed=embed, view=view)
+            view.message = msg
         else:
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, view=view)
+            try:
+                view.message = await interaction.original_response()
+            except Exception:
+                pass
 
     async def show_stats(self, interaction: discord.Interaction, user: Optional[discord.Member | discord.User] = None):
         target_user = user or interaction.user
@@ -1114,12 +1290,12 @@ class Coordle(commands.Cog):
     @app_commands.command(name="coordle", description="Start a cooperative Wordle game with custom word length, attempts, and mode.")
     @app_commands.describe(
         length="Word length to guess (4-8 letters, default: 5)",
-        attempts="Total number of attempts allowed (4-12, default: 6)",
-        mode="Game mode: Normal (relaxed) or Blitz (speedrun 60s clock with 1.5x points)"
+        attempts="Total number of attempts allowed (3-15, default: 6)",
+        mode="Game mode: Normal (relaxed 24h timer) or Blitz (speedrun 5m clock +30s/guess, 1.5x points)"
     )
     @app_commands.choices(mode=[
-        app_commands.Choice(name="⏱️ Normal Mode (Relaxed 12h timer)", value="normal"),
-        app_commands.Choice(name="⚡ Blitz Mode (Speedrun 60s +10s/guess, 1.5x pts)", value="blitz")
+        app_commands.Choice(name="⏱️ Normal Mode (Relaxed 24h timer)", value="normal"),
+        app_commands.Choice(name="⚡ Blitz Mode (Speedrun 5m +30s/guess, 1.5x pts)", value="blitz")
     ])
     async def coordle_cmd(
         self,
@@ -1128,6 +1304,14 @@ class Coordle(commands.Cog):
         attempts: int = 6,
         mode: str = "normal"
     ):
+        if not (4 <= length <= 8):
+            await interaction.response.send_message("❌ Word length must be between 4 and 8 letters.", ephemeral=True)
+            return
+
+        if not (3 <= attempts <= 15):
+            await interaction.response.send_message("❌ Max attempts must be between 3 and 15.", ephemeral=True)
+            return
+
         await self.start_game(interaction, length=length, max_attempts=attempts, mode=mode)
 
     @app_commands.command(name="coordle_daily", description="Play today's server-wide Wordle puzzle (resets at 00:00 UTC).")

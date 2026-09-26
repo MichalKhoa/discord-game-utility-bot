@@ -172,12 +172,16 @@ class CoordleSetupView(discord.ui.View):
         min_values=1,
         max_values=1,
         options=[
-            discord.SelectOption(label="4 Attempts", value="4", description="Hardcore difficulty"),
-            discord.SelectOption(label="5 Attempts", value="5", description="Challenging"),
-            discord.SelectOption(label="6 Attempts", value="6", description="Standard Wordle rules", default=True),
-            discord.SelectOption(label="7 Attempts", value="7", description="Extra attempt"),
-            discord.SelectOption(label="8 Attempts", value="8", description="Relaxed mode"),
-            discord.SelectOption(label="10 Attempts", value="10", description="Casual party mode"),
+            discord.SelectOption(label="3 Attempts", value="3", description="🔥 Sudden Death / Expert", emoji="💀"),
+            discord.SelectOption(label="4 Attempts", value="4", description="Hardcore difficulty", emoji="⚡"),
+            discord.SelectOption(label="5 Attempts", value="5", description="Challenging puzzle", emoji="🎯"),
+            discord.SelectOption(label="6 Attempts", value="6", description="Standard Wordle rules (Default)", default=True, emoji="🟩"),
+            discord.SelectOption(label="7 Attempts", value="7", description="Extra attempt buffer", emoji="👍"),
+            discord.SelectOption(label="8 Attempts", value="8", description="Relaxed casual play", emoji="🌱"),
+            discord.SelectOption(label="9 Attempts", value="9", description="Generous attempts", emoji="🏖️"),
+            discord.SelectOption(label="10 Attempts", value="10", description="Cooperative party mode", emoji="🎉"),
+            discord.SelectOption(label="12 Attempts", value="12", description="Beginner friendly", emoji="👥"),
+            discord.SelectOption(label="15 Attempts", value="15", description="Mega party free-for-all", emoji="🌟"),
         ],
         row=1
     )
