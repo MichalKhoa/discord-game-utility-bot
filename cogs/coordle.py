@@ -5,6 +5,7 @@ import asyncio
 import time
 import hashlib
 import datetime
+import string
 from typing import List, Dict, Optional, Tuple, Set, Any
 from collections import Counter
 
@@ -14,6 +15,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from databases.coordle_database import CoordleDatabase
+from utils.coordle_image import render_coordle_board
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS_DIR = os.path.join(ROOT_DIR, "assets", "wordle")
@@ -304,7 +306,7 @@ def build_rules_embed() -> discord.Embed:
             "• Anyone in the channel can contribute guesses toward the shared board.\n"
             "• **15s Anti-Spam Cooldown**: After guessing, wait 15 seconds to let other teammates guess.\n"
             "• Invalid words or wrong lengths receive an ephemeral warning and do **not** cost an attempt.\n"
-            "• Use the live **Letter Tracker (QWERTY)** to see discovered and eliminated letters."
+            "• Use the live **Word Progress** and categorized **Letter Tracker** to see discovered, misplaced, and eliminated letters."
         ),
         inline=False
     )
@@ -377,7 +379,7 @@ class CoordleGame:
         self.is_daily: bool = is_daily
         self.daily_date_str: str = daily_date_str or datetime.date.today().strftime("%Y-%m-%d")
 
-        self.guesses: List[Tuple[str, List[str], str, int]] = []  # (word, pattern, author_name, points_earned)
+        self.guesses: List[Tuple[str, List[str], str, int, List[str]]] = []  # (word, pattern, author_name, points_earned, discoveries)
         self.game_over: bool = False
         self.won: bool = False
         self.solver: Optional[str] = None
@@ -422,7 +424,8 @@ class CoordleGame:
             header = f"⚡ Co-ordle Blitz ({self.word_length} Letters) {attempts_str} {status_icon}"
 
         lines = [header, ""]
-        for _, pattern, _, _ in self.guesses:
+        for entry in self.guesses:
+            pattern = entry[1]
             lines.append("".join(tile_map[p] for p in pattern))
         return "\n".join(lines)
 
@@ -453,6 +456,7 @@ class CoordleGame:
         guess_points = 0
         new_greens = 0
         new_yellows = 0
+        discoveries: List[str] = []
 
         # Newly discovered green positions (+10 pts each)
         for i, status in enumerate(eval_result):
@@ -461,6 +465,7 @@ class CoordleGame:
                 guess_points += 10
                 new_greens += 1
                 self.known_target_chars.add(guess[i])
+                discoveries.append(f"🟩{guess[i]}")
 
         # Newly discovered yellow letters (+5 pts each)
         for i, status in enumerate(eval_result):
@@ -469,6 +474,7 @@ class CoordleGame:
                 self.known_target_chars.add(char)
                 guess_points += 5
                 new_yellows += 1
+                discoveries.append(f"🟨{char}")
 
         player_data["greens"] += new_greens
         player_data["yellows"] += new_yellows
@@ -511,7 +517,8 @@ class CoordleGame:
                 guess_points = int(guess_points * 1.5)
 
             player_data["points"] += guess_points
-            self.guesses.append((guess, eval_result, player_name, guess_points))
+            discoveries.append("🎯 Solved!")
+            self.guesses.append((guess, eval_result, player_name, guess_points, discoveries))
             return True, f"🎉 **{player_name}** solved the mystery word: **{self.target_word}**! (+{guess_points} pts)", guess_points
 
         # 1.5x Blitz points multiplier for clue points
@@ -519,14 +526,15 @@ class CoordleGame:
             guess_points = int(guess_points * 1.5)
 
         player_data["points"] += guess_points
-        self.guesses.append((guess, eval_result, player_name, guess_points))
+        self.guesses.append((guess, eval_result, player_name, guess_points, discoveries))
 
         if len(self.guesses) >= self.max_attempts:
             self.game_over = True
             self.won = False
             return True, f"💀 Game Over! The mystery word was **{self.target_word}**.", guess_points
 
-        return False, f"Attempt `{len(self.guesses)}/{self.max_attempts}` (+{guess_points} pts)", guess_points
+        discovery_msg = f" (Found {', '.join(discoveries)})" if discoveries else ""
+        return False, f"Attempt `{len(self.guesses)}/{self.max_attempts}` (+{guess_points} pts{discovery_msg})", guess_points
 
 
 class CoordleGuessModal(discord.ui.Modal):
@@ -603,9 +611,13 @@ class CoordleGuessModal(discord.ui.Modal):
                 asyncio.create_task(self.game_view.save_stats())
 
         self.game_view.update_buttons()
-        embed = self.game_view.get_embed()
+        embed, file = self.game_view.get_embed_and_file()
 
-        await interaction.response.edit_message(embed=embed, view=self.game_view)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self.game_view,
+            attachments=[file] if file else []
+        )
 
 
 class CoordleGameView(discord.ui.View):
@@ -637,10 +649,10 @@ class CoordleGameView(discord.ui.View):
                     if self.cog:
                         await self.save_stats()
                     self.update_buttons()
-                    embed = self.get_embed()
+                    embed, file = self.get_embed_and_file()
                     if self.message:
                         try:
-                            await self.message.edit(embed=embed, view=self)
+                            await self.message.edit(embed=embed, view=self, attachments=[file] if file else [])
                         except Exception:
                             pass
                     break
@@ -663,7 +675,7 @@ class CoordleGameView(discord.ui.View):
             if self.cog:
                 await self.save_stats()
             self.update_buttons()
-            embed = self.get_embed()
+            embed, file = self.get_embed_and_file()
             embed.title = f"⌛ Co-ordle ({self.game.word_length} Letters) — Expired"
             embed.colour = discord.Colour.dark_grey()
             embed.description += (
@@ -672,7 +684,7 @@ class CoordleGameView(discord.ui.View):
             )
             if self.message:
                 try:
-                    await self.message.edit(embed=embed, view=self)
+                    await self.message.edit(embed=embed, view=self, attachments=[file] if file else [])
                 except Exception:
                     pass
 
@@ -704,7 +716,20 @@ class CoordleGameView(discord.ui.View):
             except Exception as e:
                 print(f"Error saving Coordle stats for user {uid}: {e}")
 
-    def get_embed(self) -> discord.Embed:
+    def get_file(self) -> Optional[discord.File]:
+        try:
+            buf = render_coordle_board(
+                guesses=self.game.guesses,
+                letter_status=self.game.letter_status,
+                word_length=self.game.word_length,
+                max_attempts=self.game.max_attempts
+            )
+            return discord.File(fp=buf, filename="coordle.png")
+        except Exception as e:
+            print(f"[Coordle] Error rendering image: {e}")
+            return None
+
+    def get_embed(self, has_image: bool = True) -> discord.Embed:
         if self.game.won:
             color = discord.Colour.green()
             prefix = "📅 Daily Co-ordle" if self.game.is_daily else "🟩 Co-ordle"
@@ -725,43 +750,6 @@ class CoordleGameView(discord.ui.View):
             else:
                 title = f"🟩 Co-ordle ({self.game.word_length} Letters) — Guess the Word!"
 
-        board_lines = []
-        tile_map = {'G': '🟩', 'Y': '🟨', 'B': '⬛'}
-
-        for i, (word, pattern, author, pts) in enumerate(self.game.guesses, 1):
-            tiles = "".join(tile_map[p] for p in pattern)
-            word_spaced = " ".join(list(word))
-            board_lines.append(f"`{i:2d}.` {tiles}  **`{word_spaced}`**  — *{author}* (`+{pts} pts`)")
-
-        # Fill remaining attempt slots
-        empty_slot = "⬜" * self.game.word_length
-        for i in range(len(self.game.guesses) + 1, self.game.max_attempts + 1):
-            board_lines.append(f"`{i:2d}.` {empty_slot}")
-
-        board_text = "\n".join(board_lines)
-
-        # Keyboard letter tracker (QWERTY layout)
-        qwerty = [
-            "Q W E R T Y U I O P",
-            "A S D F G H J K L",
-            "Z X C V B N M"
-        ]
-        keyboard_lines = []
-        for row in qwerty:
-            row_display = []
-            for char in row.split():
-                st = self.game.letter_status.get(char)
-                if st == 'G':
-                    row_display.append(f"🟩{char}")
-                elif st == 'Y':
-                    row_display.append(f"🟨{char}")
-                elif st == 'B':
-                    row_display.append(f"~~{char}~~")
-                else:
-                    row_display.append(char)
-            keyboard_lines.append(" ".join(row_display))
-        keyboard_text = "\n".join(keyboard_lines)
-
         # Status / Timer line
         if self.game.game_over:
             timer_line = "🔒 **Status**: Concluded"
@@ -773,18 +761,95 @@ class CoordleGameView(discord.ui.View):
         mode_badge = "⚡ `BLITZ (1.5x PTS)`" if self.game.mode == "blitz" else ("📅 `DAILY PUZZLE`" if self.game.is_daily else "⏱️ `STANDARD`")
 
         desc = [
-            f"**Mode**: {mode_badge} | **Attempts**: `{len(self.game.guesses)}/{self.game.max_attempts}` | {timer_line}",
-            "",
-            "### 📋 Guess Board",
-            board_text,
-            "",
-            "### ⌨️ Letter Tracker",
-            keyboard_text,
+            f"**Mode**: {mode_badge} | **Attempts**: `{len(self.game.guesses)}/{self.game.max_attempts}` | {timer_line}"
         ]
 
+        if not has_image:
+            # Fallback text board and tracker if image rendering is unavailable
+            progress_slots = []
+            for idx in range(self.game.word_length):
+                if idx in self.game.known_green_indices:
+                    progress_slots.append(f"🟩 `{self.game.target_word[idx]}`")
+                elif self.game.game_over and not self.game.won:
+                    progress_slots.append(f"⬛ `{self.game.target_word[idx]}`")
+                else:
+                    progress_slots.append("⬜ `_`")
+            progress_line = "  ".join(progress_slots)
+
+            yellow_chars = [c for c in string.ascii_uppercase if self.game.letter_status.get(c) == 'Y']
+            yellow_str = ", ".join(f"`{c}`" for c in yellow_chars) if yellow_chars else "*None yet*"
+
+            if self.game.won:
+                progress_text = f"{progress_line}\n🎯 **Word Discovered!**"
+            elif self.game.game_over:
+                progress_text = f"{progress_line}\n💀 **Solution**: **`{self.game.target_word}`**"
+            else:
+                progress_text = f"{progress_line}\n🟨 **Present in Word**: {yellow_str}"
+
+            board_lines = []
+            tile_map = {'G': '🟩', 'Y': '🟨', 'B': '⬛'}
+            for i, entry in enumerate(self.game.guesses, 1):
+                word = entry[0]
+                pattern = entry[1]
+                author = entry[2]
+                pts = entry[3]
+                discoveries = entry[4] if len(entry) > 4 else []
+                tiles = "".join(tile_map[p] for p in pattern)
+                word_spaced = " ".join(list(word))
+                found_str = f" • Found {', '.join(discoveries)}" if discoveries else ""
+                board_lines.append(f"`{i:2d}.` {tiles}  **`{word_spaced}`**  — *{author}* (`+{pts} pts`{found_str})")
+
+            for i in range(len(self.game.guesses) + 1, self.game.max_attempts + 1):
+                board_lines.append(f"`{i:2d}.` {'⬜' * self.game.word_length}")
+
+            board_text = "\n".join(board_lines)
+
+            correct_chars = [c for c in string.ascii_uppercase if self.game.letter_status.get(c) == 'G']
+            present_chars = [c for c in string.ascii_uppercase if self.game.letter_status.get(c) == 'Y']
+            eliminated_chars = [c for c in string.ascii_uppercase if self.game.letter_status.get(c) == 'B']
+            remaining_chars = [c for c in string.ascii_uppercase if c not in self.game.letter_status]
+
+            correct_display = ", ".join(f"`{c}`" for c in correct_chars) if correct_chars else "*None*"
+            present_display = ", ".join(f"`{c}`" for c in present_chars) if present_chars else "*None*"
+            eliminated_display = " ".join(f"~~{c}~~" for c in eliminated_chars) if eliminated_chars else "*None*"
+            remaining_display = " ".join(remaining_chars) if remaining_chars else "*None*"
+
+            qwerty = ["Q W E R T Y U I O P", "A S D F G H J K L", "Z X C V B N M"]
+            keyboard_lines = []
+            for row in qwerty:
+                row_display = []
+                for char in row.split():
+                    st = self.game.letter_status.get(char)
+                    if st == 'G': row_display.append(f"🟩{char}")
+                    elif st == 'Y': row_display.append(f"🟨{char}")
+                    elif st == 'B': row_display.append(f"~~{char}~~")
+                    else: row_display.append(char)
+                keyboard_lines.append(" ".join(row_display))
+            keyboard_text = "\n".join(keyboard_lines)
+
+            tracker_text = (
+                f"🟩 **Correct**: {correct_display}\n"
+                f"🟨 **Present**: {present_display}\n"
+                f"⬛ **Eliminated**: {eliminated_display}\n"
+                f"⬜ **Untried**: {remaining_display}\n\n"
+                f"{keyboard_text}"
+            )
+
+            desc.extend([
+                "",
+                "### 🎯 Word Progress",
+                progress_text,
+                "",
+                "### 📋 Guess Board",
+                board_text,
+                "",
+                "### ⌨️ Letter Tracker",
+                tracker_text,
+            ])
+
         if self.game.won:
-            desc.append(f"\n🎉 **{self.game.solver}** solved the mystery word: **`{self.game.target_word}`** in `{len(self.game.guesses)}` attempts!")
-            # Summary of points earned
+            desc.append(f"\nGood job! Everyone who participated gets **+10** points!")
+            desc.append(f"🎉 **{self.game.solver}** solved the mystery word: **`{self.game.target_word}`** in `{len(self.game.guesses)}` attempts!")
             pts_summary = ", ".join(f"**{p['name']}**: `+{p['points']} pts`" for p in self.game.participants.values())
             if pts_summary:
                 desc.append(f"🏅 **Match Rewards**: {pts_summary}")
@@ -793,7 +858,6 @@ class CoordleGameView(discord.ui.View):
         elif self.game.game_over and not self.game.expired:
             desc.append(f"\n💀 Out of attempts! The mystery word was **`{self.game.target_word}`**.")
 
-        # Show definition if available upon game conclusion
         if self.game.definition:
             desc.append(f"\n💡 **Word Meaning**: {self.game.definition}")
 
@@ -802,8 +866,16 @@ class CoordleGameView(discord.ui.View):
             description="\n".join(desc),
             colour=color
         )
-        embed.set_footer(text="Scoring: 🟨 +5 | 🟩 +10 | 🎯 Solve: Letters Left × 5 | 🏆 Team Win: +10")
+        if has_image:
+            embed.set_image(url="attachment://coordle.png")
+
+        embed.set_footer(text="Click 'Submit Guess' to play | Rules: /coordle_rules")
         return embed
+
+    def get_embed_and_file(self) -> Tuple[discord.Embed, Optional[discord.File]]:
+        file = self.get_file()
+        embed = self.get_embed(has_image=(file is not None))
+        return embed, file
 
     @discord.ui.button(label="Submit Guess", style=discord.ButtonStyle.success, emoji="🔤", row=0)
     async def guess_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -835,9 +907,13 @@ class CoordleGameView(discord.ui.View):
         if self.cog:
             asyncio.create_task(self.save_stats())
         self.update_buttons()
-        embed = self.get_embed()
+        embed, file = self.get_embed_and_file()
         embed.description += f"\n\n🏳️ Game ended early by {interaction.user.mention}. The word was **`{self.game.target_word}`**."
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(
+            embed=embed,
+            view=self,
+            attachments=[file] if file else []
+        )
 
 
 class Coordle(commands.Cog):
@@ -873,12 +949,13 @@ class Coordle(commands.Cog):
                     daily_date_str=today_str
                 )
                 view = CoordleGameView(game, cog=self)
-                embed = view.get_embed()
+                embed, file = view.get_embed_and_file()
                 msg = await channel.send(
                     f"🌅 **Good morning! The Daily Co-ordle for `{today_str}` has arrived!**\n"
                     f"Work together to solve today's mystery word and preserve your server win streak!",
                     embed=embed,
-                    view=view
+                    view=view,
+                    file=file if file else discord.utils.MISSING
                 )
                 view.message = msg
             except Exception as e:
@@ -932,13 +1009,19 @@ class Coordle(commands.Cog):
             )
 
         view = CoordleGameView(game, cog=self)
-        embed = view.get_embed()
+        embed, file = view.get_embed_and_file()
 
         if interaction.response.is_done():
-            msg = await interaction.followup.send(embed=embed, view=view)
+            if file:
+                msg = await interaction.followup.send(embed=embed, view=view, file=file)
+            else:
+                msg = await interaction.followup.send(embed=embed, view=view)
             view.message = msg
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            if file:
+                await interaction.response.send_message(embed=embed, view=view, file=file)
+            else:
+                await interaction.response.send_message(embed=embed, view=view)
             try:
                 view.message = await interaction.original_response()
             except Exception:
