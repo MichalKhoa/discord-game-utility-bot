@@ -1,7 +1,15 @@
+from __future__ import annotations
 import os
 import io
-from typing import List, Dict, Tuple, Optional
-from PIL import Image, ImageDraw, ImageFont
+from typing import List, Dict, Tuple, Optional, Any
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    PIL_AVAILABLE = False
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 
 # Visual Palette (matching Discord dark theme & Co-ordle reference)
@@ -66,10 +74,14 @@ def render_coordle_board(
     letter_status: Dict[str, str],
     word_length: int = 5,
     max_attempts: int = 6,
-) -> io.BytesIO:
+) -> Optional[io.BytesIO]:
     """
     Renders the Co-ordle game board and keyboard into a PNG in-memory bytes buffer.
+    Returns None if PIL is not available.
     """
+    if not PIL_AVAILABLE:
+        return None
+
     tile_size = 38
     tile_gap = 5
     tile_radius = 5

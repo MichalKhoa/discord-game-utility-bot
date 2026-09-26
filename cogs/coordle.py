@@ -724,7 +724,9 @@ class CoordleGameView(discord.ui.View):
                 word_length=self.game.word_length,
                 max_attempts=self.game.max_attempts
             )
-            return discord.File(fp=buf, filename="coordle.png")
+            if buf is not None:
+                return discord.File(fp=buf, filename="coordle.png")
+            return None
         except Exception as e:
             print(f"[Coordle] Error rendering image: {e}")
             return None
