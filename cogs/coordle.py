@@ -347,6 +347,7 @@ def build_rules_embed() -> discord.Embed:
         name="⚡ Helpful Commands",
         value=(
             "`/coordle [length] [attempts] [mode]` — Start a custom Co-ordle game\n"
+            "`/coordle_session [start/leaderboard/end]` — Host competitive match session\n"
             "`/coordle_daily` — Play today's server word of the day\n"
             "`/coordle_daily_channel [set/remove]` — Configure automated daily challenge channel (Admin)\n"
             "`/coordle_leaderboard` — View the top solvers on this server\n"
@@ -368,13 +369,15 @@ class CoordleGame:
         guild_id: Optional[int] = None,
         mode: str = "normal",
         is_daily: bool = False,
-        daily_date_str: str = ""
+        daily_date_str: str = "",
+        channel_id: Optional[int] = None
     ):
         self.target_word: str = target_word.upper()
         self.word_length: int = len(target_word)
         self.max_attempts: int = max_attempts
         self.host: Optional[discord.Member | discord.User] = host
         self.guild_id: int = guild_id or 0
+        self.channel_id: int = channel_id or 0
         self.mode: str = mode.lower()  # "normal" or "blitz"
         self.is_daily: bool = is_daily
         self.daily_date_str: str = daily_date_str or datetime.date.today().strftime("%Y-%m-%d")
@@ -716,6 +719,13 @@ class CoordleGameView(discord.ui.View):
             except Exception as e:
                 print(f"Error saving Coordle stats for user {uid}: {e}")
 
+        # Update in-memory competitive session if active in this channel
+        if self.cog and self.game.channel_id:
+            session = self.cog.get_active_session(self.game.channel_id)
+            if session and session.is_active:
+                channel = self.message.channel if self.message else None
+                await session.process_game_end(self.game, channel=channel, cog=self.cog)
+
     def get_file(self) -> Optional[discord.File]:
         try:
             buf = render_coordle_board(
@@ -762,8 +772,15 @@ class CoordleGameView(discord.ui.View):
 
         mode_badge = "⚡ `BLITZ (1.5x PTS)`" if self.game.mode == "blitz" else ("📅 `DAILY PUZZLE`" if self.game.is_daily else "⏱️ `STANDARD`")
 
+        session_badge = ""
+        if self.cog and self.game.channel_id:
+            session = self.cog.get_active_session(self.game.channel_id)
+            if session and session.is_active:
+                target_str = f"/{session.target_rounds}" if session.target_rounds else ""
+                session_badge = f" | 🏆 **Session**: `{session.name}` (R{session.rounds_played + 1}{target_str})"
+
         desc = [
-            f"**Mode**: {mode_badge} | **Attempts**: `{len(self.game.guesses)}/{self.game.max_attempts}` | {timer_line}"
+            f"**Mode**: {mode_badge} | **Attempts**: `{len(self.game.guesses)}/{self.game.max_attempts}` | {timer_line}{session_badge}"
         ]
 
         if not has_image:
@@ -915,6 +932,250 @@ class CoordleGameView(discord.ui.View):
             embed=embed,
             view=self,
             attachments=[file] if file else []
+        )
+
+
+class CoordleSession:
+    def __init__(
+        self,
+        channel_id: int,
+        guild_id: int,
+        host: discord.Member | discord.User,
+        name: str = "Competitive Match",
+        target_rounds: Optional[int] = None
+    ):
+        self.channel_id: int = channel_id
+        self.guild_id: int = guild_id
+        self.host: discord.Member | discord.User = host
+        self.name: str = name.strip() if name and name.strip() else "Competitive Match"
+        self.target_rounds: Optional[int] = target_rounds
+        self.rounds_played: int = 0
+        self.created_at: float = time.time()
+        self.last_activity: float = time.time()
+        self.is_active: bool = True
+        self.scores: Dict[int, Dict[str, Any]] = {}
+
+    def record_game_results(self, game: "CoordleGame"):
+        self.rounds_played += 1
+        self.last_activity = time.time()
+
+        for uid, p in game.participants.items():
+            if uid not in self.scores:
+                self.scores[uid] = {
+                    "user_id": uid,
+                    "user_name": p["name"],
+                    "points": 0,
+                    "words_solved": 0,
+                    "games_won": 0,
+                    "total_guesses": 0,
+                    "greens": 0,
+                    "yellows": 0,
+                }
+            self.scores[uid]["points"] += p["points"]
+            if p.get("solved"):
+                self.scores[uid]["words_solved"] += 1
+            if p.get("won"):
+                self.scores[uid]["games_won"] += 1
+            self.scores[uid]["total_guesses"] += p["guesses"]
+            self.scores[uid]["greens"] += p.get("greens", 0)
+            self.scores[uid]["yellows"] += p.get("yellows", 0)
+
+    def get_leaderboard(self, sort_by: str = "points") -> List[Dict[str, Any]]:
+        entries = list(self.scores.values())
+        if sort_by == "solves":
+            entries.sort(key=lambda x: (x["words_solved"], x["points"], x["games_won"]), reverse=True)
+        elif sort_by == "wins":
+            entries.sort(key=lambda x: (x["games_won"], x["points"], x["words_solved"]), reverse=True)
+        else:
+            entries.sort(key=lambda x: (x["points"], x["words_solved"], x["games_won"]), reverse=True)
+        return entries
+
+    def build_summary_embed(self, is_final: bool = False, sort_by: str = "points") -> discord.Embed:
+        meta_titles = {
+            "points": "All-Time Points",
+            "solves": "Words Solved",
+            "wins": "Games Won"
+        }
+        title_prefix = "🏁 Competitive Session Concluded" if is_final else "🏆 Competitive Session Leaderboard"
+        embed = discord.Embed(
+            title=f"{title_prefix}: {self.name}",
+            colour=discord.Colour.gold() if is_final else discord.Colour.og_blurple()
+        )
+
+        target_str = f"/{self.target_rounds}" if self.target_rounds else ""
+        status_str = "Concluded" if is_final else "In Progress"
+        embed.description = (
+            f"**Host**: {self.host.mention} | **Status**: `{status_str}` | **Rounds Played**: `{self.rounds_played}{target_str}`\n"
+            f"*Sorting by: **{meta_titles.get(sort_by, 'Points')}***\n\n"
+        )
+
+        entries = self.get_leaderboard(sort_by=sort_by)
+        if not entries:
+            embed.description += "*No points scored yet in this session! Submit guesses in `/coordle` games in this channel.*"
+            return embed
+
+        lines = []
+        medals = ["🥇", "🥈", "🥉"]
+        num_emojis = {4: "4️⃣", 5: "5️⃣", 6: "6️⃣", 7: "7️⃣", 8: "8️⃣", 9: "9️⃣", 10: "🔟"}
+
+        for idx, entry in enumerate(entries, 1):
+            highlight = f"**`{entry['points']:,} pts`**"
+            if sort_by == "solves":
+                highlight = f"**`{entry['words_solved']} solves`** ({entry['points']:,} pts)"
+            elif sort_by == "wins":
+                highlight = f"**`{entry['games_won']} wins`** ({entry['points']:,} pts)"
+
+            if idx == 1:
+                prefix = "🥇 **Session Champion**" if is_final else "🥇 **1st Place**"
+                lines.append(
+                    f"{prefix}: **{entry['user_name']}** — {highlight}\n"
+                    f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{entry['games_won']}` | 🧩 Guesses: `{entry['total_guesses']}` | 🟩 `{entry['greens']}` 🟨 `{entry['yellows']}`"
+                )
+            elif idx in (2, 3):
+                medal = medals[idx - 1]
+                place_str = "2nd Place" if idx == 2 else "3rd Place"
+                lines.append(
+                    f"{medal} **{place_str}: {entry['user_name']}** — {highlight}\n"
+                    f"> 🎯 Solves: `{entry['words_solved']}` | 🏆 Wins: `{entry['games_won']}` | 🧩 Guesses: `{entry['total_guesses']}`"
+                )
+            else:
+                badge = num_emojis.get(idx, f"`#{idx:2d}`")
+                lines.append(f"{badge} **{entry['user_name']}** — {highlight} (🎯 `{entry['words_solved']}` • 🏆 `{entry['games_won']}`)")
+
+        embed.description += "\n\n".join(lines)
+        footer_msg = "Final Results • GG to all contenders!" if is_final else "Play /coordle in this channel to climb the session board!"
+        embed.set_footer(text=f"{len(entries)} Contenders • {footer_msg}")
+        return embed
+
+    async def process_game_end(self, game: "CoordleGame", channel: Optional[discord.abc.Messageable] = None, cog: Optional["Coordle"] = None):
+        self.record_game_results(game)
+        # Check if target round count reached
+        if self.target_rounds and self.rounds_played >= self.target_rounds:
+            self.is_active = False
+            if cog and self.channel_id in cog.active_sessions:
+                cog.active_sessions.pop(self.channel_id, None)
+            if channel and hasattr(channel, "send"):
+                try:
+                    embed = self.build_summary_embed(is_final=True)
+                    await channel.send(
+                        content=f"🏁 **The competitive session `{self.name}` has reached its target of {self.target_rounds} rounds!**",
+                        embed=embed
+                    )
+                except Exception as e:
+                    print(f"Error broadcasting session finale: {e}")
+
+
+class CoordleSessionLeaderboardView(discord.ui.View):
+    def __init__(self, session: CoordleSession, cog: "Coordle"):
+        super().__init__(timeout=1800)
+        self.session = session
+        self.cog = cog
+        self.sort_by = "points"
+        self.message: Optional[discord.Message] = None
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.btn_points.style = discord.ButtonStyle.primary if self.sort_by == "points" else discord.ButtonStyle.secondary
+        self.btn_solves.style = discord.ButtonStyle.primary if self.sort_by == "solves" else discord.ButtonStyle.secondary
+        self.btn_wins.style = discord.ButtonStyle.primary if self.sort_by == "wins" else discord.ButtonStyle.secondary
+        self.btn_end.disabled = not self.session.is_active
+
+    @discord.ui.button(label="Points", emoji="🏆", style=discord.ButtonStyle.primary, row=0)
+    async def btn_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.sort_by = "points"
+        self.update_buttons()
+        embed = self.session.build_summary_embed(is_final=not self.session.is_active, sort_by=self.sort_by)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Solves", emoji="🎯", style=discord.ButtonStyle.secondary, row=0)
+    async def btn_solves(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.sort_by = "solves"
+        self.update_buttons()
+        embed = self.session.build_summary_embed(is_final=not self.session.is_active, sort_by=self.sort_by)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Wins", emoji="🏅", style=discord.ButtonStyle.secondary, row=0)
+    async def btn_wins(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.sort_by = "wins"
+        self.update_buttons()
+        embed = self.session.build_summary_embed(is_final=not self.session.is_active, sort_by=self.sort_by)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Refresh", emoji="🔄", style=discord.ButtonStyle.secondary, row=0)
+    async def btn_refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.update_buttons()
+        embed = self.session.build_summary_embed(is_final=not self.session.is_active, sort_by=self.sort_by)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="End Session", emoji="🛑", style=discord.ButtonStyle.danger, row=0)
+    async def btn_end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_host = interaction.user.id == self.session.host.id
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_host or is_admin):
+            await interaction.response.send_message("❌ Only the session host or server admins can end this session.", ephemeral=True)
+            return
+
+        self.session.is_active = False
+        if self.session.channel_id in self.cog.active_sessions:
+            self.cog.active_sessions.pop(self.session.channel_id, None)
+
+        self.update_buttons()
+        embed = self.session.build_summary_embed(is_final=True, sort_by=self.sort_by)
+        await interaction.response.edit_message(
+            content=f"🛑 **Competitive session `{self.session.name}` concluded by {interaction.user.mention}!**",
+            embed=embed,
+            view=self
+        )
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
+class CoordleSessionStartView(discord.ui.View):
+    def __init__(self, session: CoordleSession, cog: "Coordle"):
+        super().__init__(timeout=86400)
+        self.session = session
+        self.cog = cog
+        self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="Play Round", emoji="🟩", style=discord.ButtonStyle.success, row=0)
+    async def btn_play(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.session.is_active:
+            await interaction.response.send_message("❌ This competitive session has already concluded.", ephemeral=True)
+            return
+        await self.cog.start_game(interaction, length=5, max_attempts=6, mode="normal")
+
+    @discord.ui.button(label="Session Leaderboard", emoji="📊", style=discord.ButtonStyle.primary, row=0)
+    async def btn_board(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = CoordleSessionLeaderboardView(self.session, self.cog)
+        embed = self.session.build_summary_embed(is_final=not self.session.is_active)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="End Session", emoji="🛑", style=discord.ButtonStyle.danger, row=0)
+    async def btn_end(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_host = interaction.user.id == self.session.host.id
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_host or is_admin):
+            await interaction.response.send_message("❌ Only the session host or server admins can end this session.", ephemeral=True)
+            return
+
+        self.session.is_active = False
+        if self.session.channel_id in self.cog.active_sessions:
+            self.cog.active_sessions.pop(self.session.channel_id, None)
+
+        for item in self.children:
+            item.disabled = True
+        embed = self.session.build_summary_embed(is_final=True)
+        await interaction.response.edit_message(
+            content=f"🛑 **Competitive session `{self.session.name}` concluded by {interaction.user.mention}!**",
+            embed=embed,
+            view=self
         )
 
 
@@ -1122,6 +1383,18 @@ class Coordle(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = CoordleDatabase()
+        self.active_sessions: Dict[int, CoordleSession] = {}
+
+    def get_active_session(self, channel_id: int) -> Optional[CoordleSession]:
+        session = self.active_sessions.get(channel_id)
+        if not session:
+            return None
+        # Inactivity cleanup after 2 hours (7200 seconds)
+        if time.time() - session.last_activity > 7200:
+            session.is_active = False
+            self.active_sessions.pop(channel_id, None)
+            return None
+        return session
 
     async def cog_load(self):
         await self.db.init_db()
@@ -1178,6 +1451,7 @@ class Coordle(commands.Cog):
         length = max(4, min(8, length))
         max_attempts = max(3, min(15, max_attempts))
         guild_id = interaction.guild_id or (interaction.guild.id if interaction.guild else 0)
+        channel_id = interaction.channel_id or (interaction.channel.id if interaction.channel else 0)
 
         if is_daily:
             today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -1187,6 +1461,7 @@ class Coordle(commands.Cog):
                 max_attempts=6,
                 host=interaction.user,
                 guild_id=guild_id,
+                channel_id=channel_id,
                 mode="normal",
                 is_daily=True,
                 daily_date_str=today_str
@@ -1207,6 +1482,7 @@ class Coordle(commands.Cog):
                 max_attempts=max_attempts,
                 host=interaction.user,
                 guild_id=guild_id,
+                channel_id=channel_id,
                 mode=mode
             )
 
@@ -1366,6 +1642,131 @@ class Coordle(commands.Cog):
     @app_commands.command(name="coordle_rules", description="View rules, tile colors, and point scoring for Co-ordle.")
     async def coordle_rules_cmd(self, interaction: discord.Interaction):
         await interaction.response.send_message(embed=build_rules_embed())
+
+    session_group = app_commands.Group(name="coordle_session", description="Manage competitive Co-ordle match sessions.")
+
+    @session_group.command(name="start", description="Start a competitive Co-ordle match session in this channel.")
+    @app_commands.describe(
+        name="Title for this competitive session (default: Competitive Match)",
+        rounds="Number of games before session automatically concludes (optional, e.g. 5)"
+    )
+    async def session_start_cmd(
+        self,
+        interaction: discord.Interaction,
+        name: str = "Competitive Match",
+        rounds: Optional[int] = None
+    ):
+        channel_id = interaction.channel_id
+        existing = self.get_active_session(channel_id)
+        if existing and existing.is_active:
+            await interaction.response.send_message(
+                f"⚠️ An active session **`{existing.name}`** is already running in this channel!\n"
+                f"View live rankings with `/coordle_session leaderboard` or conclude it with `/coordle_session end`.",
+                ephemeral=True
+            )
+            return
+
+        if rounds is not None and rounds < 1:
+            await interaction.response.send_message("❌ Target rounds must be at least 1.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild_id or (interaction.guild.id if interaction.guild else 0)
+        session = CoordleSession(
+            channel_id=channel_id,
+            guild_id=guild_id,
+            host=interaction.user,
+            name=name,
+            target_rounds=rounds
+        )
+        self.active_sessions[channel_id] = session
+
+        target_str = f" • Target: **{rounds} Rounds**" if rounds else " • Target: **Open-ended**"
+        embed = discord.Embed(
+            title=f"🏆 Competitive Co-ordle Session Started: {session.name}",
+            description=(
+                f"**Host**: {interaction.user.mention}{target_str}\n\n"
+                f"All Co-ordle games played in this channel will automatically count towards this session's leaderboard!\n"
+                f"Click **Play Round** below or use `/coordle` to begin competing."
+            ),
+            colour=discord.Colour.gold()
+        )
+        embed.set_footer(text="Session tracking active • View rankings with /coordle_session leaderboard")
+        view = CoordleSessionStartView(session, self)
+        await interaction.response.send_message(embed=embed, view=view)
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            pass
+
+    @session_group.command(name="leaderboard", description="View the live leaderboard for the active competitive session.")
+    async def session_leaderboard_cmd(self, interaction: discord.Interaction):
+        channel_id = interaction.channel_id
+        session = self.get_active_session(channel_id)
+        if not session or not session.is_active:
+            await interaction.response.send_message(
+                "❌ No active competitive session in this channel. Start one with `/coordle_session start`!",
+                ephemeral=True
+            )
+            return
+
+        view = CoordleSessionLeaderboardView(session, self)
+        embed = session.build_summary_embed(is_final=False)
+        await interaction.response.send_message(embed=embed, view=view)
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            pass
+
+    @session_group.command(name="end", description="End the active competitive session in this channel and crown the champion.")
+    async def session_end_cmd(self, interaction: discord.Interaction):
+        channel_id = interaction.channel_id
+        session = self.get_active_session(channel_id)
+        if not session or not session.is_active:
+            await interaction.response.send_message(
+                "❌ No active competitive session in this channel to end.",
+                ephemeral=True
+            )
+            return
+
+        is_host = interaction.user.id == session.host.id
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if not (is_host or is_admin):
+            await interaction.response.send_message("❌ Only the session host or server admins can end this session.", ephemeral=True)
+            return
+
+        session.is_active = False
+        self.active_sessions.pop(channel_id, None)
+
+        embed = session.build_summary_embed(is_final=True)
+        await interaction.response.send_message(
+            content=f"🏁 **Competitive session `{session.name}` concluded by {interaction.user.mention}!**",
+            embed=embed
+        )
+
+    @session_group.command(name="status", description="Check status of the active competitive session in this channel.")
+    async def session_status_cmd(self, interaction: discord.Interaction):
+        channel_id = interaction.channel_id
+        session = self.get_active_session(channel_id)
+        if not session or not session.is_active:
+            await interaction.response.send_message(
+                "ℹ️ No competitive session is currently running in this channel. Start one with `/coordle_session start`!",
+                ephemeral=True
+            )
+            return
+
+        target_str = f"/{session.target_rounds}" if session.target_rounds else ""
+        embed = discord.Embed(
+            title=f"⚡ Session Active: {session.name}",
+            description=(
+                f"**Host**: {session.host.mention}\n"
+                f"**Rounds Completed**: `{session.rounds_played}{target_str}`\n"
+                f"**Active Contenders**: `{len(session.scores)}`\n"
+                f"**Created**: <t:{int(session.created_at)}:R>\n\n"
+                f"Use `/coordle_session leaderboard` for live standings or `/coordle_session end` to finish."
+            ),
+            colour=discord.Colour.og_blurple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

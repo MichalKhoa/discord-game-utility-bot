@@ -3,7 +3,14 @@ import unittest
 from unittest.mock import MagicMock, AsyncMock
 import discord
 
-from cogs.coordle import CoordleGame, CoordleGameView, evaluate_guess
+from cogs.coordle import (
+    CoordleGame,
+    CoordleGameView,
+    CoordleSession,
+    CoordleSessionLeaderboardView,
+    CoordleSessionStartView,
+    evaluate_guess,
+)
 from utils.coordle_image import render_coordle_board
 
 
@@ -256,6 +263,175 @@ class TestCoordleGameAndBoard(unittest.IsolatedAsyncioTestCase):
             await view.category_select.callback(mock_select_interaction)
             self.assertEqual(view.category, "solves")
             self.assertEqual(view.page, 0)
+
+
+class TestCoordleSession(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.mock_host = MagicMock(spec=discord.Member)
+        self.mock_host.id = 11111
+        self.mock_host.display_name = "HostUser"
+        self.mock_host.mention = "<@11111>"
+
+        self.mock_user_a = MagicMock(spec=discord.Member)
+        self.mock_user_a.id = 22222
+        self.mock_user_a.display_name = "Alice"
+        self.mock_user_a.mention = "<@22222>"
+
+        self.mock_user_b = MagicMock(spec=discord.Member)
+        self.mock_user_b.id = 33333
+        self.mock_user_b.display_name = "Bob"
+        self.mock_user_b.mention = "<@33333>"
+
+    def test_session_scoring_and_ranking(self):
+        session = CoordleSession(channel_id=100, guild_id=200, host=self.mock_host, name="Weekend Cup", target_rounds=3)
+        self.assertEqual(session.name, "Weekend Cup")
+        self.assertEqual(session.target_rounds, 3)
+        self.assertEqual(session.rounds_played, 0)
+        self.assertTrue(session.is_active)
+
+        # Mock game 1: Alice gets 40 pts, solves word. Bob gets 15 pts.
+        game1 = CoordleGame("APPLE")
+        game1.participants = {
+            22222: {"name": "Alice", "points": 40, "guesses": 2, "greens": 3, "yellows": 1, "won": True, "solved": True},
+            33333: {"name": "Bob", "points": 15, "guesses": 1, "greens": 1, "yellows": 1, "won": True, "solved": False},
+        }
+        session.record_game_results(game1)
+        self.assertEqual(session.rounds_played, 1)
+
+        # Mock game 2: Bob gets 50 pts, solves word. Alice gets 10 pts.
+        game2 = CoordleGame("BERRY")
+        game2.participants = {
+            22222: {"name": "Alice", "points": 10, "guesses": 1, "greens": 1, "yellows": 0, "won": True, "solved": False},
+            33333: {"name": "Bob", "points": 50, "guesses": 2, "greens": 4, "yellows": 0, "won": True, "solved": True},
+        }
+        session.record_game_results(game2)
+        self.assertEqual(session.rounds_played, 2)
+
+        # Points: Bob has 65 (15+50), Alice has 50 (40+10) -> Bob 1st
+        lb_points = session.get_leaderboard(sort_by="points")
+        self.assertEqual([e["user_name"] for e in lb_points], ["Bob", "Alice"])
+
+        # Solves: Bob and Alice both have 1 solve. Bob has more points -> Bob 1st
+        lb_solves = session.get_leaderboard(sort_by="solves")
+        self.assertEqual(lb_solves[0]["user_name"], "Bob")
+
+        # Wins: Bob and Alice both have 2 wins.
+        lb_wins = session.get_leaderboard(sort_by="wins")
+        self.assertEqual(lb_wins[0]["user_name"], "Bob")
+
+        # Verify summary embeds
+        embed_progress = session.build_summary_embed(is_final=False, sort_by="points")
+        self.assertIn("🏆 Competitive Session Leaderboard: Weekend Cup", embed_progress.title)
+        self.assertIn("Rounds Played**: `2/3`", embed_progress.description)
+        self.assertIn("🥇 **1st Place**: **Bob**", embed_progress.description)
+        self.assertIn("🥈 **2nd Place: Alice**", embed_progress.description)
+
+        embed_final = session.build_summary_embed(is_final=True, sort_by="points")
+        self.assertIn("🏁 Competitive Session Concluded: Weekend Cup", embed_final.title)
+        self.assertIn("🥇 **Session Champion**: **Bob**", embed_final.description)
+
+    async def test_session_target_rounds_auto_end(self):
+        session = CoordleSession(channel_id=100, guild_id=200, host=self.mock_host, name="Quick Match", target_rounds=2)
+        mock_cog = MagicMock()
+        mock_cog.active_sessions = {100: session}
+        mock_channel = MagicMock(spec=discord.TextChannel)
+        mock_channel.send = AsyncMock()
+
+        game = CoordleGame("CRANE")
+        game.participants = {22222: {"name": "Alice", "points": 20, "guesses": 1, "greens": 2, "yellows": 0, "won": True, "solved": True}}
+
+        # Round 1 - should not conclude
+        await session.process_game_end(game, channel=mock_channel, cog=mock_cog)
+        self.assertEqual(session.rounds_played, 1)
+        self.assertTrue(session.is_active)
+        self.assertIn(100, mock_cog.active_sessions)
+        mock_channel.send.assert_not_called()
+
+        # Round 2 - reaches target 2 -> should conclude and broadcast
+        await session.process_game_end(game, channel=mock_channel, cog=mock_cog)
+        self.assertEqual(session.rounds_played, 2)
+        self.assertFalse(session.is_active)
+        self.assertNotIn(100, mock_cog.active_sessions)
+        mock_channel.send.assert_called_once()
+        sent_kwargs = mock_channel.send.call_args[1]
+        self.assertIn("reached its target of 2 rounds", sent_kwargs["content"])
+
+    async def test_session_leaderboard_view_interactions(self):
+        session = CoordleSession(channel_id=100, guild_id=200, host=self.mock_host, name="Test Cup")
+        session.scores = {
+            22222: {"user_id": 22222, "user_name": "Alice", "points": 30, "words_solved": 1, "games_won": 1, "total_guesses": 2, "greens": 2, "yellows": 1}
+        }
+        mock_cog = MagicMock()
+        mock_cog.active_sessions = {100: session}
+        view = CoordleSessionLeaderboardView(session, mock_cog)
+
+        # Test switching categories: Solves, Wins, Points, Refresh
+        mock_interaction = MagicMock(spec=discord.Interaction)
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.edit_message = AsyncMock()
+
+        await view.btn_solves.callback(mock_interaction)
+        self.assertEqual(view.sort_by, "solves")
+        mock_interaction.response.edit_message.assert_called()
+
+        await view.btn_wins.callback(mock_interaction)
+        self.assertEqual(view.sort_by, "wins")
+
+        await view.btn_points.callback(mock_interaction)
+        self.assertEqual(view.sort_by, "points")
+
+        await view.btn_refresh.callback(mock_interaction)
+
+        # Test end button by unauthorized user
+        mock_unauth = MagicMock(spec=discord.Interaction)
+        mock_unauth.user = self.mock_user_a
+        mock_unauth.guild = MagicMock()
+        mock_unauth.user.guild_permissions.manage_guild = False
+        mock_unauth.response = MagicMock()
+        mock_unauth.response.send_message = AsyncMock()
+
+        await view.btn_end.callback(mock_unauth)
+        self.assertTrue(session.is_active)
+        mock_unauth.response.send_message.assert_called_with("❌ Only the session host or server admins can end this session.", ephemeral=True)
+
+        # Test end button by host
+        mock_host_interaction = MagicMock(spec=discord.Interaction)
+        mock_host_interaction.user = self.mock_host
+        mock_host_interaction.guild = MagicMock()
+        mock_host_interaction.response = MagicMock()
+        mock_host_interaction.response.edit_message = AsyncMock()
+
+        await view.btn_end.callback(mock_host_interaction)
+        self.assertFalse(session.is_active)
+        self.assertNotIn(100, mock_cog.active_sessions)
+        mock_host_interaction.response.edit_message.assert_called()
+
+    async def test_session_start_view_interactions(self):
+        session = CoordleSession(channel_id=100, guild_id=200, host=self.mock_host, name="Test Cup")
+        mock_cog = MagicMock()
+        mock_cog.active_sessions = {100: session}
+        mock_cog.start_game = AsyncMock()
+        view = CoordleSessionStartView(session, mock_cog)
+
+        mock_interaction = MagicMock(spec=discord.Interaction)
+        mock_interaction.user = self.mock_host
+        mock_interaction.response = MagicMock()
+        mock_interaction.response.send_message = AsyncMock()
+        mock_interaction.response.edit_message = AsyncMock()
+
+        # Play Round button
+        await view.btn_play.callback(mock_interaction)
+        mock_cog.start_game.assert_called_once_with(mock_interaction, length=5, max_attempts=6, mode="normal")
+
+        # Session Leaderboard button
+        await view.btn_board.callback(mock_interaction)
+        mock_interaction.response.send_message.assert_called_once()
+        self.assertTrue(mock_interaction.response.send_message.call_args[1]["ephemeral"])
+
+        # End Session button
+        await view.btn_end.callback(mock_interaction)
+        self.assertFalse(session.is_active)
+        self.assertNotIn(100, mock_cog.active_sessions)
 
 
 if __name__ == "__main__":
