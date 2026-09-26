@@ -15,7 +15,9 @@ from discord.ext import commands, tasks
 
 from databases.coordle_database import CoordleDatabase
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "wordle")
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ASSETS_DIR = os.path.join(ROOT_DIR, "assets", "wordle")
+DATA_DIR = os.path.join(ROOT_DIR, "data", "wordle")
 
 # In-memory dictionary cache: {length: (answers_list, valid_guesses_set)}
 WORD_CACHE: Dict[int, Tuple[List[str], Set[str]]] = {}
@@ -24,22 +26,62 @@ DEFINITION_CACHE: Dict[str, str] = {}
 
 
 def load_words(length: int) -> Tuple[List[str], Set[str]]:
-    """Loads and caches word lists for a specific length."""
+    """
+    Loads and caches word lists for a specific length.
+    Checks assets/wordle/ first (immune to Docker volume mounts over data/),
+    then data/wordle/, and falls back to GitHub raw fetch if files are missing.
+    """
     if length in WORD_CACHE:
         return WORD_CACHE[length]
 
-    guesses_path = os.path.join(DATA_DIR, f"guesses_{length}.json")
-    answers_path = os.path.join(DATA_DIR, f"answers_{length}.json")
-
+    search_dirs = [ASSETS_DIR, DATA_DIR]
     guesses: Set[str] = set()
     answers: List[str] = []
 
-    if os.path.exists(guesses_path):
-        with open(guesses_path, "r", encoding="utf-8") as f:
-            guesses = set(json.load(f))
-    if os.path.exists(answers_path):
-        with open(answers_path, "r", encoding="utf-8") as f:
-            answers = json.load(f)
+    for d in search_dirs:
+        g_path = os.path.join(d, f"guesses_{length}.json")
+        a_path = os.path.join(d, f"answers_{length}.json")
+        if not guesses and os.path.exists(g_path):
+            try:
+                with open(g_path, "r", encoding="utf-8") as f:
+                    guesses = set(json.load(f))
+            except Exception:
+                pass
+        if not answers and os.path.exists(a_path):
+            try:
+                with open(a_path, "r", encoding="utf-8") as f:
+                    answers = json.load(f)
+            except Exception:
+                pass
+        if answers and guesses:
+            break
+
+    # Fallback: auto-download from GitHub raw if completely missing in runtime environment
+    if not answers or not guesses:
+        import urllib.request
+        base_url = "https://raw.githubusercontent.com/MichalKhoa/discord-game-utility-bot/master/assets/wordle"
+        os.makedirs(ASSETS_DIR, exist_ok=True)
+        if not guesses:
+            try:
+                url = f"{base_url}/guesses_{length}.json"
+                req = urllib.request.Request(url, headers={"User-Agent": "DiscordBot/1.0"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    guesses = set(json.loads(response.read().decode("utf-8")))
+                    with open(os.path.join(ASSETS_DIR, f"guesses_{length}.json"), "w", encoding="utf-8") as f:
+                        json.dump(list(guesses), f)
+            except Exception as e:
+                print(f"[Coordle] Could not fetch guesses_{length}.json from fallback: {e}")
+
+        if not answers:
+            try:
+                url = f"{base_url}/answers_{length}.json"
+                req = urllib.request.Request(url, headers={"User-Agent": "DiscordBot/1.0"})
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    answers = json.loads(response.read().decode("utf-8"))
+                    with open(os.path.join(ASSETS_DIR, f"answers_{length}.json"), "w", encoding="utf-8") as f:
+                        json.dump(answers, f)
+            except Exception as e:
+                print(f"[Coordle] Could not fetch answers_{length}.json from fallback: {e}")
 
     if not answers and guesses:
         answers = list(guesses)
