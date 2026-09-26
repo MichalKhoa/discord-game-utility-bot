@@ -25,6 +25,7 @@ Covers all Discord cogs in `cogs/` directory.
    - Voice/text humor roast commands.
 9. `cogs/coordle.py`:
    - Cooperative multi-player Wordle game with custom word lengths (4-8), attempt limits (4-12), and Standard / Blitz speedrun modes.
+   - Dynamic Pillow (`utils/coordle_image.py`) board & QWERTY keyboard image renderer (matching original Co-ordle UI with 0 custom emojis needed), with text Word Progress fallback.
    - Live Datamuse & Dictionary API definition lookup on victory, defeat, or surrender.
    - 12-hour inactivity expiration, 15s turn-taking cooldown, and shareable spoiler grid button.
    - Deterministic server-wide daily puzzles (/coordle_daily) and automated 00:00 UTC channel broadcasting.
