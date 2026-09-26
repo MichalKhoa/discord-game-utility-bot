@@ -275,7 +275,7 @@ class ConfirmActionView(discord.ui.View):
 
 class PlayerListView(discord.ui.View):
     def __init__(self, db: PlayerDatabase, players: List[dict], alliance_filter: Optional[str] = None, page: int = 0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=1800)
         self.db = db
         self.all_players = players
         self.players = players
@@ -403,7 +403,7 @@ class PlayerListView(discord.ui.View):
 
 class FlaggedPlayersView(discord.ui.View):
     def __init__(self, db: PlayerDatabase, players: List[dict], page: int = 0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=1800)
         self.db = db
         self.players = players
         self.page = page

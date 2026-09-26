@@ -553,15 +553,15 @@ class TestWyrDatabase(unittest.IsolatedAsyncioTestCase):
             self.assertIn("█", bar_a)
 
 
-class TestMenuViews(unittest.TestCase):
-    def test_menu_views_instantiation(self):
+class TestMenuViews(unittest.IsolatedAsyncioTestCase):
+    async def test_menu_views_instantiation(self):
         from utils.views import MenuButtons, GameMenuButtons, PlayerMenuButtons, UtilityMenuButtons
         mock_bot = MagicMock()
         v_main = MenuButtons(mock_bot)
         self.assertEqual(len(v_main.children), 3)
 
         v_game = GameMenuButtons(mock_bot)
-        self.assertEqual(len(v_game.children), 3)
+        self.assertEqual(len(v_game.children), 4)
 
         v_player = PlayerMenuButtons(mock_bot)
         self.assertGreaterEqual(len(v_player.children), 5)
@@ -569,7 +569,7 @@ class TestMenuViews(unittest.TestCase):
         v_util = UtilityMenuButtons(mock_bot)
         self.assertGreaterEqual(len(v_util.children), 4)
 
-    def test_russian_roulette_gameplay(self):
+    async def test_russian_roulette_gameplay(self):
         from cogs.russian_roulette import RussianRouletteGame
         game = RussianRouletteGame(chamber_size=6)
         mock_user = MagicMock()
@@ -610,7 +610,7 @@ class TestMenuViews(unittest.TestCase):
         if suspense_file and hasattr(suspense_file, "fp") and suspense_file.fp:
             suspense_file.fp.close()
 
-    def test_russian_roulette_lms_mode(self):
+    async def test_russian_roulette_lms_mode(self):
         from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, ASSETS_DIR
 
         # Check procedural GIF assets exist and are non-empty
@@ -686,8 +686,7 @@ class TestMenuViews(unittest.TestCase):
         if gif_file and hasattr(gif_file, "fp") and gif_file.fp:
             gif_file.fp.close()
 
-    def test_russian_roulette_execute_turn_animation(self):
-        import asyncio
+    async def test_russian_roulette_execute_turn_animation(self):
         from cogs.russian_roulette import RussianRouletteView
 
         mock_bot = MagicMock()
@@ -707,10 +706,7 @@ class TestMenuViews(unittest.TestCase):
         interaction.message = MagicMock()
         interaction.message.edit = AsyncMock()
 
-        async def run():
-            await view._execute_turn_with_animation(interaction, action_type="pull")
-
-        asyncio.run(run())
+        await view._execute_turn_with_animation(interaction, action_type="pull")
 
         # Verify frame 1 used interaction.response.edit_message
         self.assertTrue(interaction.response.edit_message.called)
@@ -744,7 +740,7 @@ class TestMenuViews(unittest.TestCase):
             logged = await cog.db.is_code_redeemed("TESTCODE123")
             self.assertIsNotNone(logged)
 
-    async def test_stop_current_redemption(self):
+    def test_stop_current_redemption(self):
         from cogs.code_redeem import CodeRedeem
         mock_bot = MagicMock()
         cog = CodeRedeem(mock_bot)
@@ -801,7 +797,7 @@ class TestMenuViews(unittest.TestCase):
         mock_on_confirm.assert_called_once_with(mock_interaction_valid, reason="wrong code")
 
 
-    def test_flagged_players_view(self):
+    async def test_flagged_players_view(self):
         from cogs.player_manager import FlaggedPlayersView
         mock_db = MagicMock()
         mock_players = [
@@ -819,7 +815,7 @@ class TestMenuViews(unittest.TestCase):
         self.assertIn("FlaggedPlayer0", embed.description)
         self.assertIn("Page 1 of 3", embed.footer.text)
 
-    def test_player_list_view_filter(self):
+    async def test_player_list_view_filter(self):
         from cogs.player_manager import PlayerListView
         mock_db = MagicMock()
         mock_players = [
@@ -834,14 +830,13 @@ class TestMenuViews(unittest.TestCase):
         mock_interaction = MagicMock()
         mock_interaction.data = {"values": ["ALLIANCE_NOR"]}
         mock_interaction.response = AsyncMock()
-        import asyncio
-        asyncio.run(view.filter_callback(mock_interaction))
+        await view.filter_callback(mock_interaction)
         self.assertEqual(len(view.players), 2)
         self.assertIn("Alliance [NOR]", view.alliance_filter)
 
         # Test filter callback for FLAGGED
         mock_interaction.data = {"values": ["STATUS_FLAGGED"]}
-        asyncio.run(view.filter_callback(mock_interaction))
+        await view.filter_callback(mock_interaction)
         self.assertEqual(len(view.players), 1)
         self.assertEqual(view.players[0]["fid"], "1002")
 

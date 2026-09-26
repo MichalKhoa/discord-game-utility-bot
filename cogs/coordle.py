@@ -313,8 +313,8 @@ def build_rules_embed() -> discord.Embed:
     embed.add_field(
         name="⚡ Game Modes",
         value=(
-            "• **Standard Mode**: Take your time (up to 12 hours) to solve the mystery word.\n"
-            "• **⚡ Blitz Mode**: Starts with 60 seconds! Each valid guess adds +10s (max 120s). "
+            "• **Standard Mode**: Take your time (up to 24 hours) to solve the mystery word.\n"
+            "• **⚡ Blitz Mode**: Starts with 5 minutes (300s)! Each valid guess adds +30s (max 10 mins). "
             "All points earned get a **1.5x speed multiplier**!\n"
             "• **📅 Daily Co-ordle**: A unique server-wide word of the day that resets at 00:00 UTC. "
             "Win daily puzzles to build your server win streak!"
@@ -390,10 +390,10 @@ class CoordleGame:
         self.known_green_indices: Set[int] = set()
         self.known_target_chars: Set[str] = set()
 
-        # Timing: 12-hour expiration for standard games, or 60s running clock for Blitz
+        # Timing: 24-hour expiration for standard games, or 300s running clock for Blitz
         self.created_at: float = time.time()
-        self.expires_at: float = self.created_at + 43200  # 12 hours
-        self.blitz_expires_at: float = self.created_at + 60.0 if self.mode == "blitz" else 0.0
+        self.expires_at: float = self.created_at + 86400  # 24 hours
+        self.blitz_expires_at: float = self.created_at + 300.0 if self.mode == "blitz" else 0.0
 
         # 15s turn-taking cooldown: user_id -> timestamp of last valid guess
         self.user_cooldowns: Dict[int, float] = {}
@@ -490,9 +490,9 @@ class CoordleGame:
                 elif current is None:
                     self.letter_status[char] = 'B'
 
-        # Blitz bonus: add 10 seconds to clock (capped at +120s from now)
+        # Blitz bonus: add 30 seconds to clock (capped at +600s / 10m from now)
         if self.mode == "blitz" and not self.game_over:
-            self.blitz_expires_at = min(time.time() + 120.0, self.blitz_expires_at + 10.0)
+            self.blitz_expires_at = min(time.time() + 600.0, self.blitz_expires_at + 30.0)
 
         # Check win / loss
         if guess == self.target_word:
@@ -622,8 +622,8 @@ class CoordleGuessModal(discord.ui.Modal):
 
 class CoordleGameView(discord.ui.View):
     def __init__(self, game: CoordleGame, cog: Optional["Coordle"] = None):
-        # 12 hours for standard/daily, or 150s for blitz view timeout
-        view_timeout = 150 if game.mode == "blitz" else 43200
+        # 24 hours for standard/daily, or 900s (15m) for blitz view timeout
+        view_timeout = 900 if game.mode == "blitz" else 86400
         super().__init__(timeout=view_timeout)
         self.game = game
         self.cog = cog
@@ -679,7 +679,7 @@ class CoordleGameView(discord.ui.View):
             embed.title = f"⌛ Co-ordle ({self.game.word_length} Letters) — Expired"
             embed.colour = discord.Colour.dark_grey()
             embed.description += (
-                f"\n\n⌛ **Game Expired**: This puzzle was inactive for 12 hours. "
+                f"\n\n⌛ **Game Expired**: This puzzle was inactive for 24 hours. "
                 f"The mystery word was **`{self.game.target_word}`**."
             )
             if self.message:
@@ -756,7 +756,7 @@ class CoordleGameView(discord.ui.View):
         if self.game.game_over:
             timer_line = "🔒 **Status**: Concluded"
         elif self.game.mode == "blitz":
-            timer_line = f"⚡ **Blitz Clock**: <t:{int(self.game.blitz_expires_at)}:R> (+10s/guess)"
+            timer_line = f"⚡ **Blitz Clock**: <t:{int(self.game.blitz_expires_at)}:R> (+30s/guess)"
         else:
             timer_line = f"⏳ **Expires**: <t:{int(self.game.expires_at)}:R>"
 

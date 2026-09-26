@@ -126,7 +126,7 @@ class GameMenuButtons(discord.ui.View):
 
 class CoordleSetupView(discord.ui.View):
     def __init__(self, bot: commands.Bot):
-        super().__init__(timeout=300)
+        super().__init__(timeout=86400)
         self.bot = bot
         self.selected_length = 5
         self.selected_attempts = 6

@@ -161,7 +161,7 @@ class RussianRouletteGame:
 
 class RussianRouletteView(discord.ui.View):
     def __init__(self, bot: commands.Bot, host: discord.Member | discord.User, chamber_size: int = 6, mode: str = "standard"):
-        super().__init__(timeout=300)
+        super().__init__(timeout=3600)
         self.bot = bot
         self.host = host
         self.game = RussianRouletteGame(chamber_size=chamber_size, mode=mode)
