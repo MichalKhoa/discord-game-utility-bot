@@ -40,6 +40,19 @@
 
 ---
 
+## Tool Calling Precedence & Noise Reduction
+- **Tool Hierarchy**:
+  1. **AST & Call Graph**: `codegraph_explore` (one call, trust AST results).
+  2. **File Reading & Editing**: Antigravity built-in `view_file`, `replace_file_content`, `write_to_file`. Prohibit Serena MCP file tools (`read_file`, `create_text_file`, `replace_content`).
+  3. **Terminal Execution**: Antigravity built-in `run_command`. Prohibit Serena `execute_shell_command`.
+  4. **Memory Maintenance**: Directly edit `.serena/memories/*.md` via Antigravity built-in file tools; no MCP indirection.
+- **Transcript Noise Control**:
+  - Quiet CLI flags for routine checks: `pytest -q --tb=short`, `git status -s`.
+  - Expand tracebacks only when diagnosing reproducing test failures.
+  - Limit command output volume to keep conversation context clean.
+
+---
+
 ## Git & Feature Completion Workflow
 - **Prompt for Commit & Push**: After implementing and verifying any feature, bug fix, or refactor, always proactively ask the user if they would like to commit and push the changes.
 - **Conventional Commits**: Format commit messages tersely with Conventional Commits (e.g. `feat(...)`, `fix(...)`, `refactor(...)`).

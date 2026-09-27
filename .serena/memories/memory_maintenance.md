@@ -11,3 +11,4 @@ Guidelines for maintaining the Serena memory graph.
 - Dense, invariant-focused agent notes.
 - Focus on stable schemas, design decisions, and core boundaries.
 - Update memories whenever schemas, cog additions, or integration contracts change.
+- Directly maintained via built-in file editing tools; no MCP server indirection.
