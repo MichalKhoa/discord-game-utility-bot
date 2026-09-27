@@ -54,6 +54,8 @@
   - `py -3.12 scripts/gate.py`: Runs test suite, returns 1-line pass/fail status.
   - `py -3.12 scripts/check_cogs.py`: Offline syntax and `setup(bot)` validator for all cogs.
   - `py -3.12 scripts/db_peek.py`: Compact SQLite schema, row counts, and column overview.
+  - `py -3.12 scripts/check_word_lists.py`: Validates Wordle/Coordle answer & guess list integrity, sorting, and absence of archaic words.
+
 
 ---
 

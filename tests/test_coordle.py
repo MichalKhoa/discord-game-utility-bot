@@ -154,6 +154,11 @@ class TestCoordleGameAndBoard(unittest.IsolatedAsyncioTestCase):
         embed = view.get_embed(has_image=False)
         self.assertIn("💀 **Solution**: **`PLANT`**", embed.description)
 
+    def test_word_lists_integrity(self):
+        from scripts.check_word_lists import check
+        self.assertEqual(check(), 0)
+
+
     async def test_setup_view_attempts_options(self):
         from utils.views import CoordleSetupView
         mock_bot = MagicMock()
