@@ -50,6 +50,10 @@
   - Quiet CLI flags for routine checks: `pytest -q --tb=short`, `git status -s`.
   - Expand tracebacks only when diagnosing reproducing test failures.
   - Limit command output volume to keep conversation context clean.
+- **Agent Helper Scripts**:
+  - `py -3.12 scripts/gate.py`: Runs test suite, returns 1-line pass/fail status.
+  - `py -3.12 scripts/check_cogs.py`: Offline syntax and `setup(bot)` validator for all cogs.
+  - `py -3.12 scripts/db_peek.py`: Compact SQLite schema, row counts, and column overview.
 
 ---
 
