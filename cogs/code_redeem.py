@@ -1,19 +1,21 @@
+import asyncio
+import datetime
+import os
+import threading
+from typing import Optional, List, Set
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from typing import Optional, List, Set
 
-import utils.redeem_code
-import utils.code_detector
-
-import asyncio
-import threading
-import datetime
-import os
-import aiohttp
-
-import databases.player_database
 from databases.player_database import PlayerDatabase
+import utils.code_detector
+import utils.redeem_code
+from utils.redeem_code import (
+    format_time,
+    build_batch_progress_embed,
+    send_with_webhook_fallback,
+)
 from utils.views import ConfirmRedeemView, BatchProgressView
 from utils.modals import ConfirmAbortModal
 
@@ -21,6 +23,8 @@ __all__ = [
     "ConfirmRedeemView",
     "ConfirmAbortModal",
     "BatchProgressView",
+    "format_time",
+    "build_batch_progress_embed",
     "CodeRedeem",
     "setup",
 ]
@@ -29,54 +33,6 @@ DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE'  # playerID.txt on GDisk
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "players.db")
 LEGACY_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
-
-
-def format_time(seconds: float) -> str:
-    """Format seconds into readable min/sec string."""
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    if m > 0:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-
-def build_batch_progress_embed(
-    current_code: str,
-    code_index: int,
-    total_codes: int,
-    processed: int,
-    total: int,
-    counters: dict,
-    elapsed: float
-) -> discord.Embed:
-    """Builds a dynamic real-time progress embed with visual bar and ETA."""
-    percent = (processed / total * 100) if total > 0 else 0
-    bar = utils.redeem_code.make_progress_bar(processed, total, length=16)
-
-    if processed > 0 and total > processed:
-        rate = processed / max(1.0, elapsed)
-        eta_seconds = (total - processed) / max(0.1, rate)
-        eta_str = format_time(eta_seconds)
-    elif processed >= total and total > 0:
-        eta_str = "Finishing..."
-    else:
-        eta_str = "Calculating..."
-
-    embed = discord.Embed(
-        title=f"⏳ Batch Redemption in Progress ({code_index}/{total_codes})",
-        colour=discord.Colour.gold()
-    )
-    embed.description = (
-        f"**Active Code**: `{current_code}`\n\n"
-        f"`{bar}` **{percent:.1f}%** ({processed}/{total} players)\n\n"
-        f"• 🟢 **Success**: `{counters.get('success', 0)}`\n"
-        f"• 📦 **Already Claimed**: `{counters.get('already_redeemed', 0)}`\n"
-        f"• 🟡 **Wrong Kingdom / Flagged**: `{counters.get('wrong_kingdom', 0)}`\n"
-        f"• ⚠️ **Rate Limited**: `{counters.get('rate_limited', 0)}`\n\n"
-        f"⏱️ **Elapsed**: `{format_time(elapsed)}`  •  ⏳ **Est. Remaining**: `~{eta_str}`"
-    )
-    embed.set_footer(text="Live updates every ~4s • You will be pinged when finished.")
-    return embed
 
 
 class CodeRedeem(commands.Cog):
@@ -563,42 +519,14 @@ class CodeRedeem(commands.Cog):
         user_id: Optional[int] = None
     ):
         """Attempts sending via channel webhook for custom bot identity; gracefully falls back to channel.send() and DM."""
-        if hasattr(channel, "create_webhook") and not isinstance(channel, (discord.DMChannel, discord.GroupChannel)):
-            try:
-                webhook = None
-                if isinstance(channel, discord.Thread):
-                    parent = channel.parent or await self.bot.fetch_channel(channel.parent_id)
-                    webhook = await parent.create_webhook(name=bot_name)
-                    webhook_url = f"{webhook.url}?thread_id={channel.id}"
-                else:
-                    webhook = await channel.create_webhook(name=bot_name)
-                    webhook_url = webhook.url
-
-                async with aiohttp.ClientSession() as session:
-                    wh = discord.Webhook.from_url(webhook_url, session=session)
-                    await wh.send(content=content, embed=embed)
-
-                if webhook:
-                    try:
-                        await webhook.delete()
-                    except Exception:
-                        pass
-                return
-            except Exception as wh_err:
-                print(f"DEBUG: Webhook delivery failed ({wh_err}), falling back to direct channel message.")
-
-        # Fallback to direct channel send
-        try:
-            await channel.send(content=content, embed=embed)
-        except (discord.Forbidden, discord.HTTPException) as pe:
-            print(f"DEBUG: Channel send failed ({pe}).")
-            if user_id:
-                try:
-                    user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-                    if user:
-                        await user.send(content=content, embed=embed)
-                except Exception as dm_err:
-                    print(f"DEBUG: DM delivery failed ({dm_err}).")
+        await utils.redeem_code.send_with_webhook_fallback(
+            self.bot,
+            channel,
+            content=content,
+            embed=embed,
+            bot_name=bot_name,
+            user_id=user_id
+        )
 
     async def run_redeem(
         self,

@@ -5,116 +5,17 @@ import datetime
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from typing import Optional, Union, List, Dict, Any
+from typing import Optional, List
 
 from databases.player_database import PlayerDatabase
 from utils import google_sync
+from utils.player_views import SheetPruneConfirmView
 
-
-class SheetPruneConfirmView(discord.ui.View):
-    """Interactive confirmation view for pruning missing IDs during Google Sheet pull."""
-
-    def __init__(
-        self,
-        cog: "BackupSyncCog",
-        user_id: int,
-        missing_fids: List[str],
-        valid_players: List[Dict[str, Any]],
-        skipped_rows: List[Dict[str, Any]],
-        sheet_title: str,
-        sheet_url: str
-    ):
-        super().__init__(timeout=60.0)
-        self.cog = cog
-        self.user_id = user_id
-        self.missing_fids = missing_fids
-        self.valid_players = valid_players
-        self.skipped_rows = skipped_rows
-        self.sheet_title = sheet_title
-        self.sheet_url = sheet_url
-        self.message: Optional[Union[discord.Message, discord.WebhookMessage]] = None
-
-    @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger, emoji="🗑️")
-    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Only the command invoker can confirm this action.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        for child in self.children:
-            child.disabled = True
-
-        try:
-            # ponytail: single local backup before destructive prune; cloud drive upload handled by daily task
-            backup_file = await asyncio.to_thread(google_sync.create_local_backup, self.cog.db.db_path)
-            google_sync.cleanup_local_backups()
-            backup_name = os.path.basename(backup_file)
-
-            deleted_count = await self.cog.db.batch_delete_players(fids=self.missing_fids)
-            synced_count = await self.cog.db.bulk_upsert_players(self.valid_players)
-
-            embed = discord.Embed(
-                title="🗑️ Google Sheet Prune & Sync Complete",
-                description=f"Pruned missing records and synchronized with [{self.sheet_title}]({self.sheet_url}).",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="🗑️ Players Deleted", value=str(deleted_count), inline=True)
-            embed.add_field(name="🔄 Players Synced", value=str(synced_count), inline=True)
-            embed.add_field(name="⚠️ Invalid Rows Skipped", value=str(len(self.skipped_rows)), inline=True)
-            embed.add_field(name="💾 Safety Backup Snapshot", value=f"`{backup_name}` (saved to `data/backups/`)", inline=False)
-            embed.set_footer(text="Database updated. Run /player list to view current roster.")
-
-            if self.message:
-                await self.message.edit(embed=embed, view=self)
-            else:
-                await interaction.edit_original_response(embed=embed, view=self)
-        except Exception as e:
-            err_msg = f"❌ Error during prune operation: {e}"
-            if self.message:
-                await self.message.edit(content=err_msg, view=None)
-            else:
-                await interaction.followup.send(err_msg, ephemeral=True)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
-    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Only the command invoker can cancel this action.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        for child in self.children:
-            child.disabled = True
-
-        try:
-            synced_count = await self.cog.db.bulk_upsert_players(self.valid_players)
-            embed = discord.Embed(
-                title="🛡️ Pruning Cancelled (Safe Sync Applied)",
-                description=f"No players were deleted. Synchronized **{synced_count}** player(s) from [{self.sheet_title}]({self.sheet_url}).",
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Synced Players", value=str(synced_count), inline=True)
-            embed.add_field(name="Kept in DB (Not in Sheet)", value=str(len(self.missing_fids)), inline=True)
-            embed.set_footer(text="Existing database records were preserved.")
-
-            if self.message:
-                await self.message.edit(embed=embed, view=self)
-            else:
-                await interaction.edit_original_response(embed=embed, view=self)
-        except Exception as e:
-            err_msg = f"❌ Error during sync: {e}"
-            if self.message:
-                await self.message.edit(content=err_msg, view=None)
-            else:
-                await interaction.followup.send(err_msg, ephemeral=True)
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                pass
+__all__ = [
+    "BackupSyncCog",
+    "SheetPruneConfirmView",
+    "setup",
+]
 
 
 class BackupSyncCog(commands.Cog):

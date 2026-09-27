@@ -8,6 +8,8 @@ import sqlite3
 import time
 from time import perf_counter, process_time
 from typing import Tuple, List, Optional, Dict, Any
+import aiohttp
+import discord
 import requests
 try:
     from curl_cffi import requests as cffi_requests
@@ -738,3 +740,99 @@ def redeem_for_all(
         f"• Rate limited: {counters['rate_limited']}\n"
         f"• Other Errors: {counters['errors']}"
     )
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds into readable min/sec string."""
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    if m > 0:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def build_batch_progress_embed(
+    current_code: str,
+    code_index: int,
+    total_codes: int,
+    processed: int,
+    total: int,
+    counters: dict,
+    elapsed: float
+) -> discord.Embed:
+    """Builds a dynamic real-time progress embed with visual bar and ETA."""
+    percent = (processed / total * 100) if total > 0 else 0
+    bar = make_progress_bar(processed, total, length=16)
+
+    if processed > 0 and total > processed:
+        rate = processed / max(1.0, elapsed)
+        eta_seconds = (total - processed) / max(0.1, rate)
+        eta_str = format_time(eta_seconds)
+    elif processed >= total and total > 0:
+        eta_str = "Finishing..."
+    else:
+        eta_str = "Calculating..."
+
+    embed = discord.Embed(
+        title=f"⏳ Batch Redemption in Progress ({code_index}/{total_codes})",
+        colour=discord.Colour.gold()
+    )
+    embed.description = (
+        f"**Active Code**: `{current_code}`\n\n"
+        f"`{bar}` **{percent:.1f}%** ({processed}/{total} players)\n\n"
+        f"• 🟢 **Success**: `{counters.get('success', 0)}`\n"
+        f"• 📦 **Already Claimed**: `{counters.get('already_redeemed', 0)}`\n"
+        f"• 🟡 **Wrong Kingdom / Flagged**: `{counters.get('wrong_kingdom', 0)}`\n"
+        f"• ⚠️ **Rate Limited**: `{counters.get('rate_limited', 0)}`\n\n"
+        f"⏱️ **Elapsed**: `{format_time(elapsed)}`  •  ⏳ **Est. Remaining**: `~{eta_str}`"
+    )
+    embed.set_footer(text="Live updates every ~4s • You will be pinged when finished.")
+    return embed
+
+
+async def send_with_webhook_fallback(
+    bot: Any,
+    channel: discord.abc.Messageable,
+    content: Optional[str] = None,
+    embed: Optional[discord.Embed] = None,
+    bot_name: str = "GiftCodeRedeemBot",
+    user_id: Optional[int] = None
+):
+    """Attempts sending via channel webhook for custom bot identity; gracefully falls back to channel.send() and DM."""
+    if hasattr(channel, "create_webhook") and not isinstance(channel, (discord.DMChannel, discord.GroupChannel)):
+        try:
+            webhook = None
+            if isinstance(channel, discord.Thread):
+                parent = channel.parent or await bot.fetch_channel(channel.parent_id)
+                webhook = await parent.create_webhook(name=bot_name)
+                webhook_url = f"{webhook.url}?thread_id={channel.id}"
+            else:
+                webhook = await channel.create_webhook(name=bot_name)
+                webhook_url = webhook.url
+
+            async with aiohttp.ClientSession() as session:
+                wh = discord.Webhook.from_url(webhook_url, session=session)
+                await wh.send(content=content, embed=embed)
+
+            if webhook:
+                try:
+                    await webhook.delete()
+                except Exception:
+                    pass
+            return
+        except Exception as wh_err:
+            print(f"DEBUG: Webhook delivery failed ({wh_err}), falling back to direct channel message.")
+
+    # Fallback to direct channel send
+    try:
+        await channel.send(content=content, embed=embed)
+    except (discord.Forbidden, discord.HTTPException) as pe:
+        print(f"DEBUG: Channel send failed ({pe}).")
+        if user_id:
+            try:
+                user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+                if user:
+                    await user.send(content=content, embed=embed)
+            except Exception as dm_err:
+                print(f"DEBUG: DM delivery failed ({dm_err}).")
+

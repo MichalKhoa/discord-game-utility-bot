@@ -19,6 +19,8 @@ Covers all Discord cogs in `cogs/` directory.
    - "Would you rather" interactive game with real-time ASCII progress bar voting and global vote persistence.
 6. `cogs/russian_roulette.py`:
    - Interactive turn-based revolver duel (solo or multiplayer lobby) with visual cylinder status.
+   - Core game engine and view encapsulated in `utils/roulette_views.py` (`RussianRouletteGame`, `RussianRouletteView`).
+   - Animated GIF assets in `assets/roulette/`.
 7. `cogs/battle_tactics.py`:
    - Tactical battle support calculations and strategic suggestions.
 8. `cogs/roast.py`:
