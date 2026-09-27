@@ -1,13 +1,27 @@
 import discord
 import asyncio
 import io
+import math
+import re
+from typing import Optional, List, TYPE_CHECKING
 from discord.ext import commands, tasks
 
 from utils.embeds import MainMenuEmbed, PlayerStatsEmbed
-from utils.modals import RedeemModal, RedeemSingleModal, CustomCountdownModal, SearchPlayerModal
+from utils.modals import (
+    RedeemModal,
+    RedeemSingleModal,
+    CustomCountdownModal,
+    SearchPlayerModal,
+    PlayerAddModal,
+    PlayerBatchAddModal,
+    ConfirmAbortModal,
+)
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 from databases.player_database import PlayerDatabase
-from cogs.player_manager import PlayerAddModal, PlayerBatchAddModal, PlayerListView, FlaggedPlayersView
+
+if TYPE_CHECKING:
+    from cogs.player_manager import PlayerManager
+    from cogs.code_redeem import CodeRedeem
 
 
 class MenuButtons(discord.ui.View):
@@ -254,6 +268,237 @@ class CoordleSetupView(discord.ui.View):
             inline=False
         )
         await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
+
+
+class ConfirmActionView(discord.ui.View):
+    def __init__(self, author_id: int, on_confirm, prompt: str = "Proceed with this batch action?"):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+        self.on_confirm = on_confirm
+        self.prompt = prompt
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Action cancelled.", embed=None, view=self)
+
+
+class PlayerListView(discord.ui.View):
+    def __init__(self, db: PlayerDatabase, players: List[dict], alliance_filter: Optional[str] = None, page: int = 0):
+        super().__init__(timeout=1800)
+        self.db = db
+        self.all_players = players
+        self.players = players
+        self.alliance_filter = alliance_filter
+        self.page = page
+        self.per_page = 15
+        self.max_pages = max(1, (len(players) + self.per_page - 1) // self.per_page)
+        self._build_filter_dropdown()
+        self.update_buttons()
+
+    def _build_filter_dropdown(self):
+        # Extract unique alliances from roster
+        alliances = sorted({p["alliance"].strip().upper() for p in self.all_players if p.get("alliance") and p["alliance"].strip()})
+
+        options = [
+            discord.SelectOption(label="All Players", value="ALL", emoji="🌐", description=f"Total {len(self.all_players)} registered players"),
+            discord.SelectOption(label="Active Only", value="STATUS_ACTIVE", emoji="🟢", description="Accounts in good standing"),
+            discord.SelectOption(label="Flagged Only", value="STATUS_FLAGGED", emoji="🟡", description="Accounts with warnings or errors"),
+            discord.SelectOption(label="Disabled Only", value="STATUS_DISABLED", emoji="🔴", description="Inactive or disabled accounts"),
+        ]
+
+        for a in alliances[:18]:
+            count = sum(1 for p in self.all_players if (p.get("alliance") or "").strip().upper() == a)
+            options.append(discord.SelectOption(label=f"Alliance [{a}]", value=f"ALLIANCE_{a}", emoji="🛡️", description=f"{count} member(s)"))
+
+        if len(options) > 1:
+            select = discord.ui.Select(
+                placeholder="🔍 Filter by Alliance or Status...",
+                options=options,
+                row=0,
+                custom_id="select_player_filter"
+            )
+            select.callback = self.filter_callback
+            self.add_item(select)
+
+    async def filter_callback(self, interaction: discord.Interaction):
+        selected = interaction.data["values"][0]
+        if selected == "ALL":
+            self.players = self.all_players
+            self.alliance_filter = None
+        elif selected == "STATUS_ACTIVE":
+            self.players = [p for p in self.all_players if p.get("status", "ACTIVE") == "ACTIVE" and p.get("warning_count", 0) == 0]
+            self.alliance_filter = "Active Only"
+        elif selected == "STATUS_FLAGGED":
+            self.players = [p for p in self.all_players if (p.get("status") == "FLAGGED" or p.get("warning_count", 0) > 0) and p.get("status") != "DISABLED"]
+            self.alliance_filter = "Flagged Only"
+        elif selected == "STATUS_DISABLED":
+            self.players = [p for p in self.all_players if p.get("status") == "DISABLED"]
+            self.alliance_filter = "Disabled Only"
+        elif selected.startswith("ALLIANCE_"):
+            tag = selected[len("ALLIANCE_"):]
+            self.players = [p for p in self.all_players if (p.get("alliance") or "").strip().upper() == tag]
+            self.alliance_filter = f"Alliance [{tag}]"
+
+        self.page = 0
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    def update_buttons(self):
+        self.prev_btn.disabled = (self.page <= 0)
+        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+
+    def get_embed(self) -> discord.Embed:
+        start_idx = self.page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.players))
+        page_items = self.players[start_idx:end_idx]
+
+        filter_str = f" • Filter: `{self.alliance_filter}`" if self.alliance_filter else ""
+        embed = discord.Embed(
+            title=f"📋 Registered Players ({len(self.players)} shown / {len(self.all_players)} total){filter_str}",
+            colour=discord.Colour.blurple()
+        )
+
+        if not page_items:
+            embed.description = "No players found matching this criteria."
+            return embed
+
+        lines = []
+        for i, p in enumerate(page_items, start=start_idx + 1):
+            name = p.get("name") or "Unknown"
+            fid = p.get("fid")
+            kid = p.get("kid", "278")
+            alliance = f"[{p.get('alliance')}] " if p.get("alliance") else ""
+            status = p.get("status", "ACTIVE")
+
+            if status == "DISABLED":
+                badge = "🔴"
+            elif status == "FLAGGED" or (p.get("warning_count", 0) > 0):
+                badge = "🟡"
+            else:
+                badge = "🟢"
+
+            lines.append(f"`{i:2d}.` {badge} {alliance}**{name}** — FID: `{fid}` (K{kid})")
+
+        embed.description = "\n".join(lines)
+        embed.set_footer(text=f"Page {self.page + 1} of {self.max_pages} • 🟢 Active | 🟡 Flagged | 🔴 Disabled")
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="btn_prev", row=1)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="btn_next", row=1)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_pages - 1:
+            self.page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_player_refresh", row=1)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.all_players = await self.db.get_all_players()
+        self.players = self.all_players
+        self.alliance_filter = None
+        self.page = 0
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.get_embed(), view=self)
+
+
+class FlaggedPlayersView(discord.ui.View):
+    def __init__(self, db: PlayerDatabase, players: List[dict], page: int = 0):
+        super().__init__(timeout=1800)
+        self.db = db
+        self.players = players
+        self.page = page
+        self.per_page = 8
+        self.max_pages = max(1, (len(players) + self.per_page - 1) // self.per_page)
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.prev_btn.disabled = (self.page <= 0)
+        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+
+    def get_embed(self) -> discord.Embed:
+        start_idx = self.page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.players))
+        page_items = self.players[start_idx:end_idx]
+
+        embed = discord.Embed(
+            title=f"⚠️ Flagged / Problematic Players ({len(self.players)} total)",
+            colour=discord.Colour.orange()
+        )
+
+        if not page_items:
+            embed.description = "✅ No players are currently flagged or disabled."
+            return embed
+
+        lines = []
+        for i, p in enumerate(page_items, start=start_idx + 1):
+            name = p.get("name") or "Unknown"
+            fid = p.get("fid")
+            kid = p.get("kid", "278")
+            status = p.get("status", "FLAGGED")
+            badge = "🔴" if status == "DISABLED" else "🟡"
+            reason = p.get("warning_reason") or "Verification failed / API redemption error"
+            if len(reason) > 100:
+                reason = reason[:97] + "..."
+            strikes = p.get("warning_count", 0)
+            lines.append(
+                f"`{i:2d}.` {badge} **{name}** (`{fid}` | K{kid}) — `{strikes} strikes`\n> ⚠️ *{reason}*"
+            )
+
+        embed.description = "\n\n".join(lines)
+        embed.set_footer(
+            text=f"Page {self.page + 1} of {self.max_pages} • 🟡 Flagged | 🔴 Disabled • Use /player unflag to restore"
+        )
+        return embed
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="btn_flagged_prev")
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="btn_flagged_next")
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < self.max_pages - 1:
+            self.page += 1
+            self.update_buttons()
+            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_flagged_refresh")
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        self.players = await self.db.get_flagged_players()
+        self.max_pages = max(1, (len(self.players) + self.per_page - 1) // self.per_page)
+        if self.page >= self.max_pages:
+            self.page = max(0, self.max_pages - 1)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=self.get_embed(), view=self)
 
 
 class PlayerMenuButtons(discord.ui.View):
@@ -590,6 +835,69 @@ class UtilityMenuButtons(discord.ui.View):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)
         await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ConfirmRedeemView(discord.ui.View):
+    def __init__(self, author_id: int, on_confirm, on_cancel=None):
+        super().__init__(timeout=90)
+        self.author_id = author_id
+        self.on_confirm = on_confirm
+        self.on_cancel = on_cancel
+        self.value = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Proceed Anyway", style=discord.ButtonStyle.danger, emoji="⚠️")
+    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = True
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = False
+        self.stop()
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="❌ Redemption cancelled.", embed=None, view=self)
+        if self.on_cancel:
+            await self.on_cancel(interaction)
+
+
+class BatchProgressView(discord.ui.View):
+    """View with a button to open abort confirmation modal."""
+    def __init__(self, author_id: int, on_stop):
+        super().__init__(timeout=7200)
+        self.author_id = author_id
+        self.on_stop = on_stop
+
+    @discord.ui.button(label="Stop Redemption", style=discord.ButtonStyle.danger, emoji="🛑")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        is_owner = await interaction.client.is_owner(interaction.user)
+        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
+        if interaction.user.id != self.author_id and not (is_owner or is_admin):
+            await interaction.response.send_message("❌ Only the command author or server admins can stop this redemption.", ephemeral=True)
+            return
+
+        async def handle_modal_confirm(modal_interaction: discord.Interaction, reason: Optional[str] = None):
+            button.disabled = True
+            button.label = "Stopping..."
+            try:
+                if interaction.message:
+                    await interaction.message.edit(view=self)
+            except Exception:
+                pass
+            await self.on_stop(modal_interaction, reason=reason)
+
+        modal = ConfirmAbortModal(on_confirm=handle_modal_confirm)
+        await interaction.response.send_modal(modal)
 
 
 class WyrButtons(discord.ui.View):

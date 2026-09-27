@@ -14,6 +14,16 @@ import aiohttp
 
 import databases.player_database
 from databases.player_database import PlayerDatabase
+from utils.views import ConfirmRedeemView, BatchProgressView
+from utils.modals import ConfirmAbortModal
+
+__all__ = [
+    "ConfirmRedeemView",
+    "ConfirmAbortModal",
+    "BatchProgressView",
+    "CodeRedeem",
+    "setup",
+]
 
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE'  # playerID.txt on GDisk
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,101 +77,6 @@ def build_batch_progress_embed(
     )
     embed.set_footer(text="Live updates every ~4s • You will be pinged when finished.")
     return embed
-
-
-class ConfirmRedeemView(discord.ui.View):
-    def __init__(self, author_id: int, on_confirm, on_cancel=None):
-        super().__init__(timeout=90)
-        self.author_id = author_id
-        self.on_confirm = on_confirm
-        self.on_cancel = on_cancel
-        self.value = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Proceed Anyway", style=discord.ButtonStyle.danger, emoji="⚠️")
-    async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = True
-        self.stop()
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-        await self.on_confirm(interaction)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = False
-        self.stop()
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="❌ Redemption cancelled.", embed=None, view=self)
-        if self.on_cancel:
-            await self.on_cancel(interaction)
-
-
-class ConfirmAbortModal(discord.ui.Modal, title="🛑 Confirm Abort Redemption"):
-    confirmation = discord.ui.TextInput(
-        label="Type 'ABORT' to confirm stopping",
-        placeholder="ABORT",
-        required=True,
-        max_length=10,
-        style=discord.TextStyle.short
-    )
-    reason = discord.ui.TextInput(
-        label="Reason for stopping (Optional)",
-        placeholder="e.g. wrong code or pausing",
-        required=False,
-        max_length=100,
-        style=discord.TextStyle.short
-    )
-
-    def __init__(self, on_confirm):
-        super().__init__()
-        self.on_confirm = on_confirm
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if self.confirmation.value.strip().upper() != "ABORT":
-            await interaction.response.send_message(
-                "❌ Abort cancelled: You must type `ABORT` in the confirmation box.",
-                ephemeral=True
-            )
-            return
-
-        reason_str = self.reason.value.strip() if self.reason.value else None
-        await self.on_confirm(interaction, reason=reason_str)
-
-
-class BatchProgressView(discord.ui.View):
-    """View with a button to open abort confirmation modal."""
-    def __init__(self, author_id: int, on_stop):
-        super().__init__(timeout=7200)
-        self.author_id = author_id
-        self.on_stop = on_stop
-
-    @discord.ui.button(label="Stop Redemption", style=discord.ButtonStyle.danger, emoji="🛑")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        is_owner = await interaction.client.is_owner(interaction.user)
-        is_admin = interaction.user.guild_permissions.manage_guild if interaction.guild else False
-        if interaction.user.id != self.author_id and not (is_owner or is_admin):
-            await interaction.response.send_message("❌ Only the command author or server admins can stop this redemption.", ephemeral=True)
-            return
-
-        async def handle_modal_confirm(modal_interaction: discord.Interaction, reason: Optional[str] = None):
-            button.disabled = True
-            button.label = "Stopping..."
-            try:
-                if interaction.message:
-                    await interaction.message.edit(view=self)
-            except Exception:
-                pass
-            await self.on_stop(modal_interaction, reason=reason)
-
-        modal = ConfirmAbortModal(on_confirm=handle_modal_confirm)
-        await interaction.response.send_modal(modal)
 
 
 class CodeRedeem(commands.Cog):

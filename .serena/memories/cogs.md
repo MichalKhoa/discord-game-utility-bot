@@ -25,17 +25,16 @@ Covers all Discord cogs in `cogs/` directory.
    - Voice/text humor roast commands.
 9. `cogs/coordle.py`:
    - Cooperative multi-player Wordle game with custom word lengths (4-8), attempt limits (4-12), and Standard / Blitz speedrun modes.
-   - Dynamic Pillow (`utils/coordle_image.py`) board & QWERTY keyboard image renderer (matching original Co-ordle UI with 0 custom emojis needed), with text Word Progress fallback.
-   - Live Datamuse & Dictionary API definition lookup on victory, defeat, or surrender.
-   - 12-hour inactivity expiration, 15s turn-taking cooldown, and shareable spoiler grid button.
+   - Core game engine and dictionary lookups encapsulated in `utils/coordle_logic.py` (`CoordleGame`, `CoordleSession`).
+   - Interactive views and guess modal encapsulated in `utils/coordle_views.py` (`CoordleGameView`, `CoordleGuessModal`, `CoordleLeaderboardView`).
+   - Dynamic Pillow (`utils/coordle_image.py`) board & QWERTY keyboard image renderer.
    - Deterministic server-wide daily puzzles (/coordle_daily) and automated 00:00 UTC channel broadcasting.
-   - Base-5 anti-sniping scoring formula: 🟨 +5, 🟩 +10, 🎯 Solve: `Letters Left to Guess × 5`, 🏆 Team Win: +10.
-   - Commands: `/coordle`, `/coordle_daily`, `/coordle_daily_channel`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`.
+   - Commands: `/coordle`, `/coordle_daily`, `/coordle_daily_channel`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`, `/coordle_session`.
 10. `cogs/menu.py`:
    - Interactive help navigation and menu panels.
 
 ## Cog Development Invariants
 - Each cog must end with `async def setup(bot): await bot.add_cog(CogName(bot))`.
 - Defer slash command interactions immediately when operations exceed 2s.
-- UI elements (buttons, selects) must use `utils/views.py` classes.
+- UI views and modals live in `utils/views.py`, `utils/modals.py`, or dedicated `utils/*_views.py` modules; cogs import them rather than inlining UI definitions.
 
