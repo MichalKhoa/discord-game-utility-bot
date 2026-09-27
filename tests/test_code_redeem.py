@@ -29,7 +29,7 @@ from utils.code_detector import (
     IGNORED_WORDS,
 )
 from databases.player_database import PlayerDatabase
-from cogs.code_redeem import CodeRedeem
+from cogs.code_redeem import CodeRedeem, DEFAULT_AUTO_REDEEM_CHANNEL_ID
 from utils.modals import ConfirmAbortModal as UtilConfirmAbortModal
 from utils.views import (
     ConfirmRedeemView as UtilConfirmRedeemView,
@@ -406,6 +406,48 @@ class TestAutoRedeemSystem(unittest.IsolatedAsyncioTestCase):
             await cog.watch_channel_remove.callback(cog, mock_interaction, mock_ch)
             watched = await cog.db.get_watched_channels()
             self.assertNotIn(55555, watched)
+
+    async def test_get_notification_channel_resolution(self):
+        self.assertEqual(DEFAULT_AUTO_REDEEM_CHANNEL_ID, 1374873047127035981)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_bot = MagicMock()
+            mock_ch_default = MagicMock(spec=discord.TextChannel)
+            mock_ch_default.id = DEFAULT_AUTO_REDEEM_CHANNEL_ID
+            mock_ch_default.send = AsyncMock()
+
+            def get_channel_side_effect(cid):
+                if cid == DEFAULT_AUTO_REDEEM_CHANNEL_ID:
+                    return mock_ch_default
+                return None
+
+            mock_bot.get_channel = MagicMock(side_effect=get_channel_side_effect)
+            mock_bot.fetch_channel = AsyncMock(return_value=None)
+            mock_bot.guilds = []
+
+            cog = CodeRedeem(mock_bot)
+            cog.db = PlayerDatabase(os.path.join(tmpdir, "test_channel.db"))
+            await cog.db.init_db(auto_migrate=False)
+
+            # 1. Without setting, resolves DEFAULT_AUTO_REDEEM_CHANNEL_ID
+            resolved = await cog.get_notification_channel()
+            self.assertEqual(resolved, mock_ch_default)
+
+            # 2. When custom setting configured, resolves custom channel
+            mock_ch_custom = MagicMock(spec=discord.TextChannel)
+            mock_ch_custom.id = 999999
+            mock_ch_custom.send = AsyncMock()
+
+            def get_channel_with_custom(cid):
+                if cid == 999999:
+                    return mock_ch_custom
+                if cid == DEFAULT_AUTO_REDEEM_CHANNEL_ID:
+                    return mock_ch_default
+                return None
+
+            mock_bot.get_channel = MagicMock(side_effect=get_channel_with_custom)
+            await cog.db.set_setting("redeem_alert_channel_id", "999999")
+            resolved_custom = await cog.get_notification_channel()
+            self.assertEqual(resolved_custom, mock_ch_custom)
 
     def test_extract_candidate_codes_preserves_casing(self):
         text = "Check out the new gift code: `JPHolidaySEP` and >>Hangul2025<<!"

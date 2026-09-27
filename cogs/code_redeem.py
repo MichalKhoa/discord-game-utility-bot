@@ -25,10 +25,12 @@ __all__ = [
     "BatchProgressView",
     "format_time",
     "build_batch_progress_embed",
+    "DEFAULT_AUTO_REDEEM_CHANNEL_ID",
     "CodeRedeem",
     "setup",
 ]
 
+DEFAULT_AUTO_REDEEM_CHANNEL_ID = 1374873047127035981
 DOC_ID = '13qeSSMJH3S4ArPj8B3SJ31UajjS5wIqmt8MYYTvBWhE'  # playerID.txt on GDisk
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOCAL_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "players.db")
@@ -86,11 +88,12 @@ class CodeRedeem(commands.Cog):
     async def get_notification_channel(self, preferred_channel: Optional[discord.abc.Messageable] = None) -> Optional[discord.abc.Messageable]:
         """Resolves optimal channel for posting redemption progress and alerts."""
         cid_str = await self.db.get_setting("redeem_alert_channel_id")
-        if cid_str and cid_str.isdigit():
-            ch = self.bot.get_channel(int(cid_str))
+        target_cid = int(cid_str) if (cid_str and cid_str.isdigit()) else DEFAULT_AUTO_REDEEM_CHANNEL_ID
+        if target_cid:
+            ch = self.bot.get_channel(target_cid)
             if not ch:
                 try:
-                    ch = await self.bot.fetch_channel(int(cid_str))
+                    ch = await self.bot.fetch_channel(target_cid)
                 except Exception:
                     pass
             if ch and hasattr(ch, "send"):
@@ -499,7 +502,12 @@ class CodeRedeem(commands.Cog):
                 lines.append(f"• Channel ID `{cid}`: ❌ Channel Not Found / Inaccessible")
 
         alert_cid = await self.db.get_setting("redeem_alert_channel_id")
-        alert_str = f"<#{alert_cid}>" if alert_cid else "Auto-detected / Bot channel"
+        if alert_cid:
+            alert_str = f"<#{alert_cid}>"
+        elif DEFAULT_AUTO_REDEEM_CHANNEL_ID:
+            alert_str = f"<#{DEFAULT_AUTO_REDEEM_CHANNEL_ID}> (Default)"
+        else:
+            alert_str = "Auto-detected / Bot channel"
 
         embed = discord.Embed(
             title="📡 Watched Announcement Channels",
