@@ -8,6 +8,7 @@ import discord
 
 
 def generate_audio_files(count: int):
+    count = max(1, min(int(count), 60))
     base_path = Path(__file__).resolve().parent.parent / "audio"
     base_path.mkdir(parents=True, exist_ok=True)
 
@@ -45,39 +46,6 @@ def generate_audio_files(count: int):
             # 4. Clean up the temporary raw file
             if temp_path.exists():
                 os.remove(temp_path)
-
-
-# def play_audio(count):
-#     if not pygame.mixer.get_init():
-#         pygame.mixer.init()
-#
-#     if not os.path.exists("../audio/audioNumber_" + str(count) + ".mp3"):
-#         generate_audio_files(count)
-#
-#     for i in range(0, count):
-#         pygame.mixer.music.load(f"../audio/audioNumber_{i}.mp3")
-#         pygame.mixer.music.play()
-#
-#         time.sleep(1)
-#
-#         pygame.mixer.music.stop()
-#
-#
-# def play_fast_sequence(count, interval=1):
-#     if not os.path.exists("../audio/audioNumber_" + str(count) + ".mp3"):
-#         generate_audio_files(count)
-#
-#     pygame.mixer.init()
-#     # Create multiple channels so sounds can overlap if they run long
-#     channels = [pygame.mixer.Channel(i) for i in range(8)]
-#
-#     for i in range(0, count):
-#         sound = pygame.mixer.Sound(f"../audio/audioNumber_{i}.mp3")
-#         # Use modulo to cycle through channels
-#         channels[i % 2].play(sound)
-#
-#         # This interval controls the "speed" of the sequence
-#         time.sleep(interval)
 
 
 
@@ -163,6 +131,7 @@ async def stop_voice(interaction_or_ctx_or_guild):
 
 
 async def play_voice_countdown(interaction_or_ctx, count: int):
+    count = max(1, min(int(count), 60))
     # 1. Setup Paths IMMEDIATELY
     current_file = Path(__file__).resolve()
     audio_dir = current_file.parent.parent / "audio"

@@ -15,6 +15,8 @@ class CoordleDatabase:
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('PRAGMA journal_mode=WAL;')
+            await db.execute('PRAGMA busy_timeout=5000;')
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS coordle_stats (
                     user_id INTEGER NOT NULL,
@@ -47,16 +49,17 @@ class CoordleDatabase:
                 )
             """)
 
-            # Soft column migrations in case table was created earlier
-            for col_def in [
-                "current_streak INTEGER DEFAULT 0",
-                "max_streak INTEGER DEFAULT 0",
-                "last_daily_date TEXT DEFAULT ''"
-            ]:
-                try:
-                    await db.execute(f"ALTER TABLE coordle_stats ADD COLUMN {col_def}")
-                except Exception:
-                    pass
+            # Ensure all defined columns exist on pre-existing DB files
+            cursor = await db.execute("PRAGMA table_info(coordle_stats)")
+            existing_cols = {row[1] for row in await cursor.fetchall()}
+            migrations = [
+                ("current_streak", "INTEGER DEFAULT 0"),
+                ("max_streak", "INTEGER DEFAULT 0"),
+                ("last_daily_date", "TEXT DEFAULT ''"),
+            ]
+            for col_name, col_type in migrations:
+                if col_name not in existing_cols:
+                    await db.execute(f"ALTER TABLE coordle_stats ADD COLUMN {col_name} {col_type}")
 
             await db.commit()
 

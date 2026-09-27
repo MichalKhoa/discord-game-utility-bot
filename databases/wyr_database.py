@@ -39,6 +39,8 @@ class Question_Database:
 
     async def init_db(self, seed_defaults: bool = False):
         async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('PRAGMA journal_mode=WAL;')
+            await db.execute('PRAGMA busy_timeout=5000;')
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS wyr_questions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,3 +129,7 @@ class Question_Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(f"UPDATE wyr_questions SET {col} = {col} + 1 WHERE id = ?", (question_id,))
             await db.commit()
+
+
+# PEP 8 naming alias
+QuestionDatabase = Question_Database

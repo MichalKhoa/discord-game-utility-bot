@@ -62,7 +62,7 @@ __all__ = [
 class Coordle(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = CoordleDatabase()
+        self.db = getattr(bot, "coordle_db", None) or CoordleDatabase()
         self.active_sessions: Dict[int, CoordleSession] = {}
 
     def get_active_session(self, channel_id: int) -> Optional[CoordleSession]:

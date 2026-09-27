@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from cogs.code_redeem import CodeRedeem
 
 __all__ = [
+    # Base View
+    "BaseView",
     # Navigation & Games
     "MenuButtons",
     "GameMenuButtons",
@@ -47,7 +49,26 @@ __all__ = [
 ]
 
 
-class MenuButtons(discord.ui.View):
+class BaseView(discord.ui.View):
+    """Base interactive view with automatic button disabling and message editing on timeout."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.message: Optional[discord.Message] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return not self.is_finished()
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+
+class MenuButtons(BaseView):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
         self.bot = bot
@@ -128,7 +149,7 @@ class MenuButtons(discord.ui.View):
         await interaction.response.edit_message(embed=utility_menu_panel, view=UtilityMenuButtons(self.bot))
 
 
-class GameMenuButtons(discord.ui.View):
+class GameMenuButtons(BaseView):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
         self.bot = bot
@@ -161,7 +182,7 @@ class GameMenuButtons(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-class CoordleSetupView(discord.ui.View):
+class CoordleSetupView(BaseView):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=86400)
         self.bot = bot
@@ -293,7 +314,7 @@ class CoordleSetupView(discord.ui.View):
         await interaction.response.edit_message(embed=games_menu_panel, view=GameMenuButtons(self.bot))
 
 
-class UtilityMenuButtons(discord.ui.View):
+class UtilityMenuButtons(BaseView):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
         self.bot = bot
@@ -338,7 +359,7 @@ class UtilityMenuButtons(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-class ConfirmRedeemView(discord.ui.View):
+class ConfirmRedeemView(BaseView):
     def __init__(self, author_id: int, on_confirm, on_cancel=None):
         super().__init__(timeout=90)
         self.author_id = author_id
@@ -347,6 +368,8 @@ class ConfirmRedeemView(discord.ui.View):
         self.value = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not await super().interaction_check(interaction):
+            return False
         if interaction.user.id != self.author_id:
             await interaction.response.send_message("❌ This confirmation is only for the command author.", ephemeral=True)
             return False
@@ -372,7 +395,7 @@ class ConfirmRedeemView(discord.ui.View):
             await self.on_cancel(interaction)
 
 
-class BatchProgressView(discord.ui.View):
+class BatchProgressView(BaseView):
     """View with a button to open abort confirmation modal."""
     def __init__(self, author_id: int, on_stop):
         super().__init__(timeout=7200)
@@ -401,7 +424,7 @@ class BatchProgressView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 
-class WyrButtons(discord.ui.View):
+class WyrButtons(BaseView):
     def __init__(self, bot: commands.Bot, cog_instance, question_data: dict):
         super().__init__(timeout=43200)
         self.bot = bot
@@ -474,17 +497,8 @@ class WyrButtons(discord.ui.View):
         await interaction.response.edit_message(view=self)
         await self.cog.start_wyr_game(interaction)
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except Exception:
-                pass
 
-
-class RallyCountdownView(discord.ui.View):
+class RallyCountdownView(BaseView):
     def __init__(self, bot: commands.Bot):
         super().__init__(timeout=43200)
         self.bot = bot

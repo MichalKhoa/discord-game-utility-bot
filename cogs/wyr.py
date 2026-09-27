@@ -19,7 +19,7 @@ class Wyr(commands.Cog):
 
         question = await self.bot.database.get_random_wyr_question()
         if not question:
-            await interaction.followup.send("❌ No questions available in the database.", ephemeral=True)
+            await interaction.followup.send("❌ No questions available in the database.")
             return
 
         view = WyrButtons(self.bot, self, question)

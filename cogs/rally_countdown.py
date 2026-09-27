@@ -1,28 +1,28 @@
-import asyncio
-import importlib
-
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import button
 
 import utils.countdown
 from utils.countdown import play_voice_countdown, get_or_connect_vc, stop_voice
 from utils.views import RallyCountdownView
 
-importlib.reload(utils.countdown)
 
 class RallyCountdown(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="rally-countdown", description="Starts a voice countdown for rallies.")
-    async def slash_countdown(self, interaction: discord.Interaction, count: int):
-        await interaction.response.send_message(f"🎙️ Starting {count}s voice countdown...")
-        await play_voice_countdown(interaction, count)
+    @app_commands.describe(count="Countdown duration in seconds (1 to 60)")
+    async def slash_countdown(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 60]):
+        clamped_count = max(1, min(int(count), 60))
+        await interaction.response.send_message(f"🎙️ Starting {clamped_count}s voice countdown...")
+        await play_voice_countdown(interaction, clamped_count)
 
     @commands.command(name="rally")
     async def prefix_countdown(self, ctx: commands.Context, count: int = 10):
+        if not (1 <= count <= 60):
+            await ctx.send("❌ Countdown must be between 1 and 60 seconds.")
+            return
         await ctx.send(f"🎙️ Starting {count}s voice countdown...")
         await play_voice_countdown(ctx, count)
 

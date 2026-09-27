@@ -16,9 +16,11 @@ class RussianRoulette(commands.Cog):
         embed, gif_file = view.get_embed()
         attachments = [gif_file] if gif_file else []
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, files=attachments, view=view)
+            msg = await interaction.followup.send(embed=embed, files=attachments, view=view, wait=True)
         else:
             await interaction.response.send_message(embed=embed, files=attachments, view=view)
+            msg = await interaction.original_response()
+        view.message = msg
 
     @app_commands.command(name="roulette", description="Start Russian Roulette (Standard Sudden Death or Last Man Standing Battle Royale)")
     @app_commands.describe(

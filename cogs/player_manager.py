@@ -35,16 +35,9 @@ __all__ = [
 class PlayerManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = PlayerDatabase()
+        self.db = getattr(bot, "player_db", None) or PlayerDatabase()
 
     player_group = app_commands.Group(name="player", description="Manage game player IDs and kingdoms")
-
-    async def cog_load(self):
-        await self.db.init_db()
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        await self.db.init_db()
 
     async def player_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for player name or FID."""

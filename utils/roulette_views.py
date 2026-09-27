@@ -167,7 +167,17 @@ class RussianRouletteView(discord.ui.View):
         self.game.players.append(host)
         self.game.alive_players.append(host)
         self._is_running: bool = False
+        self.message: Optional[discord.Message] = None
         self.update_buttons()
+
+    async def on_timeout(self):
+        for btn in self.children:
+            btn.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
 
     def update_buttons(self):
         if self._is_running:

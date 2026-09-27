@@ -68,11 +68,12 @@ YO_MAMA_JOKES = [
 
 class ShuffleBag:
     def __init__(self, items):
-        self.items = items
+        self.source_items = list(items)
+        self.items = []
         self.reset()
     
     def reset(self):
-        self.items = list(self.items)
+        self.items = list(self.source_items)
         random.shuffle(self.items)
     
     def get(self):
@@ -138,9 +139,12 @@ class Roast(commands.Cog):
         embed.set_footer(text="React below to vote on who got burned harder!")
         
         await interaction.response.send_message(embed=embed)
-        message = await interaction.original_response()
-        await message.add_reaction("🔴")  # Red Corner
-        await message.add_reaction("🔵")  # Blue Corner
+        try:
+            message = await interaction.original_response()
+            await message.add_reaction("🔴")  # Red Corner
+            await message.add_reaction("🔵")  # Blue Corner
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     @commands.command(name="roastduel")
     async def roast_duel_prefix(self, ctx: commands.Context, player1: discord.Member, player2: discord.Member):
@@ -162,8 +166,11 @@ class Roast(commands.Cog):
         embed.set_footer(text="React below to vote on who got burned harder!")
         
         message = await ctx.send(embed=embed)
-        await message.add_reaction("🔴")
-        await message.add_reaction("🔵")
+        try:
+            await message.add_reaction("🔴")
+            await message.add_reaction("🔵")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     @app_commands.command(name="yomama", description="Tell a classic Yo Mama joke to a server member!")
     @app_commands.describe(

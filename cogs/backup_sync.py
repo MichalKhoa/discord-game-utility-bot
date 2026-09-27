@@ -23,7 +23,7 @@ class BackupSyncCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = PlayerDatabase()
+        self.db = getattr(bot, "player_db", None) or PlayerDatabase()
         self.last_backup_time: Optional[datetime.datetime] = None
         self.last_backup_status: str = "Never run"
         self.auto_backup_task.start()

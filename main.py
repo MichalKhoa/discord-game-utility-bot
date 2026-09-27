@@ -1,7 +1,16 @@
 import asyncio
 import os
 import importlib
+import logging
 import sys
+
+# Configure standard logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("DiscordGameUtilityBot")
 
 # Reconfigure stdout/stderr to use UTF-8 to prevent UnicodeEncodeErrors on some terminals
 if hasattr(sys.stdout, 'reconfigure'):
@@ -21,52 +30,65 @@ from discord.ext import commands
 
 import databases.wyr_database
 from databases.wyr_database import Question_Database
+from databases.player_database import PlayerDatabase
+from databases.coordle_database import CoordleDatabase
 
 
 class DiscordGameUtilityBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix=commands.when_mentioned_or("n!"), intents=discord.Intents.all(), owner_id=210022124423741440)
-        self.database = Question_Database()
+        owner_id_env = os.environ.get("OWNER_ID", "210022124423741440")
+        owner_id = int(owner_id_env) if owner_id_env.isdigit() else 210022124423741440
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("n!"),
+            intents=discord.Intents.all(),
+            owner_id=owner_id,
+        )
+        self.wyr_db = Question_Database()
+        self.database = self.wyr_db  # backward compatibility
+        self.player_db = PlayerDatabase()
+        self.coordle_db = CoordleDatabase()
 
     async def setup_hook(self):
-        await self.database.init_db(seed_defaults=True)
+        await self.wyr_db.init_db(seed_defaults=True)
+        await self.player_db.init_db()
+        await self.coordle_db.init_db()
         cogs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cogs')
         for filename in os.listdir(cogs_dir):
             if filename.endswith('.py'):
                 try:
                     await self.load_extension(f'cogs.{filename[:-3]}')
-                    print(f"Loaded extension: {filename}")
+                    logger.info(f"Loaded extension: {filename}")
                 except Exception as e:
-                    print(f"Failed to load extension {filename}: {e}")
+                    logger.error(f"Failed to load extension {filename}: {e}")
 
 bot = DiscordGameUtilityBot()
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    print("Connected to the Question Bank")
+    logger.info(f'Logged in as {bot.user.name}')
+    logger.info("Connected to the Question Bank")
     # This manually loads the opus library for Ubuntu
     if not discord.opus.is_loaded():
         try:
             # Common path for Ubuntu 64-bit
             discord.opus.load_opus('libopus.so.0')
-            print("✅ Opus library loaded successfully.")
+            logger.info("✅ Opus library loaded successfully.")
         except Exception as e:
-            print(f"❌ Failed to load Opus: {e}")
+            logger.warning(f"Opus not loaded via libopus.so.0: {e}")
 
     try:
         import davey
-        print("✅ Davey library is installed and available for voice E2EE.")
+        logger.info("✅ Davey library is installed and available for voice E2EE.")
     except ImportError:
-        print("⚠️ Warning: Davey library is NOT installed. Voice connection might fail.")
+        logger.warning("⚠️ Davey library is NOT installed. Voice connection might fail.")
 
-    print(f'Logged in as {bot.user}')
+    logger.info(f'Bot ready: {bot.user}')
 
 @bot.event
 async def on_connect():
-    print(f'Connected to {bot.user.name}')
+    logger.info(f'Connected to Discord Gateway as {bot.user.name}')
     for server in bot.guilds:
-        print(f"Connected to {server.name} (ID: {server.id})")
+        logger.info(f"Connected to {server.name} (ID: {server.id})")
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -158,19 +180,30 @@ lock_file_handle = None
 
 def acquire_lock():
     lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
+    global lock_file_handle
     try:
         import fcntl
-        global lock_file_handle
-        # Open lock file. We keep the file handle open for the duration of the process.
+        # Open lock file. Keep file handle open for the duration of the process.
         lock_file_handle = open(lock_path, "w")
         fcntl.lockf(lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_file_handle.write(str(os.getpid()))
         lock_file_handle.flush()
     except ImportError:
-        # Fallback for platforms that don't support fcntl (e.g., Windows)
-        pass
-    except IOError:
-        print("❌ Another instance of the bot is already running (failed to acquire file lock). Exiting.")
+        # Fallback for Windows using msvcrt
+        try:
+            import msvcrt
+            lock_file_handle = open(lock_path, "a+")
+            lock_file_handle.seek(0)
+            msvcrt.locking(lock_file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+            lock_file_handle.seek(0)
+            lock_file_handle.truncate()
+            lock_file_handle.write(str(os.getpid()))
+            lock_file_handle.flush()
+        except (ImportError, OSError):
+            logger.error("❌ Another instance of the bot is already running (Windows lock failed). Exiting.")
+            sys.exit(1)
+    except (IOError, OSError):
+        logger.error("❌ Another instance of the bot is already running (failed to acquire file lock). Exiting.")
         sys.exit(1)
 
 async def main():
@@ -182,7 +215,7 @@ async def main():
                 token = f.read().strip()
                 
     if not token:
-        print("❌ Error: No Discord token found. Please set the DISCORD_TOKEN environment variable or create token.txt.")
+        logger.error("❌ Error: No Discord token found. Please set the DISCORD_TOKEN environment variable or create token.txt.")
         sys.exit(1)
         
     async with bot:

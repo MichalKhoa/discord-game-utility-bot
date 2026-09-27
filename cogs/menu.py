@@ -1,15 +1,12 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import button
 
 from utils.embeds import MainMenuEmbed
 from utils.views import MenuButtons
 
 class Menu(commands.Cog):
-    """
-
-    """
+    """Cog for interactive multi-module main menu."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -21,7 +18,12 @@ class Menu(commands.Cog):
         embed = MainMenuEmbed(self.bot)
         view = MenuButtons(self.bot)
 
-        await interaction.response.send_message(embed=embed, view=view)
+        if interaction.response.is_done():
+            msg = await interaction.followup.send(embed=embed, view=view, wait=True)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
+            msg = await interaction.original_response()
+        view.message = msg
 
 
 async def setup(bot: commands.Bot):

@@ -38,7 +38,7 @@ LEGACY_PLAYER_IDS = os.path.join(PROJECT_ROOT, "data", "playerIDs.txt")
 class CodeRedeem(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = PlayerDatabase()
+        self.db = getattr(bot, "player_db", None) or PlayerDatabase()
         self.redeem_lock = asyncio.Lock()
         self.running_tasks = set()
         self.current_cancel_event: Optional[threading.Event] = None

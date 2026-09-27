@@ -117,8 +117,8 @@ class TestPlayerSearchAndCallables(unittest.IsolatedAsyncioTestCase):
         self.assertIs(CogPlayerListView, UtilPlayerListView)
         self.assertIs(CogFlaggedPlayersView, UtilFlaggedPlayersView)
 
-
-TestPlayerManagerCog = TestPlayerSearchAndCallables
+class TestPlayerManagerCog(TestPlayerSearchAndCallables):
+    __test__ = False
 
 
 if __name__ == "__main__":
