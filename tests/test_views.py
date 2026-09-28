@@ -203,21 +203,98 @@ class TestMenuViews(unittest.IsolatedAsyncioTestCase):
 
         view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6, mode="standard")
 
+        mock_new_message = MagicMock()
+        mock_new_message.edit = AsyncMock()
+        mock_new_message.delete = AsyncMock()
+
         interaction = MagicMock()
         interaction.user = mock_user
+        interaction.channel = MagicMock()
+        interaction.channel.send = AsyncMock(return_value=mock_new_message)
         interaction.response = MagicMock()
         interaction.response.is_done = MagicMock(return_value=False)
-        interaction.response.edit_message = AsyncMock()
-        interaction.edit_original_response = AsyncMock()
+        interaction.response.defer = AsyncMock()
         interaction.message = MagicMock()
-        interaction.message.edit = AsyncMock()
+        interaction.message.delete = AsyncMock()
+        view.message = interaction.message
 
         await view._execute_turn_with_animation(interaction, action_type="pull")
 
-        # Verify frame 1 used interaction.response.edit_message
-        self.assertTrue(interaction.response.edit_message.called)
-        # Verify frame 2 used edit_original_response (fixes webhook message bug)
-        self.assertTrue(interaction.edit_original_response.called)
+        # Verify frame 1 deferred interaction, deleted old message, and reposted at bottom
+        self.assertTrue(interaction.response.defer.called)
+        self.assertTrue(interaction.message.delete.called)
+        self.assertTrue(interaction.channel.send.called)
+        # Verify frame 2 updated the freshly sent message in-place
+        self.assertTrue(mock_new_message.edit.called)
+        self.assertEqual(view.message, mock_new_message)
+
+    async def test_russian_roulette_move_down_actions(self):
+        mock_bot = MagicMock()
+        mock_host = MagicMock()
+        mock_host.id = 11111
+        mock_host.mention = "@Host"
+        mock_host.display_name = "Host"
+
+        view = RussianRouletteView(mock_bot, host=mock_host, chamber_size=6, mode="standard")
+
+        mock_msg1 = MagicMock()
+        mock_msg1.id = 101
+        mock_msg1.delete = AsyncMock()
+        mock_msg1.edit = AsyncMock()
+
+        mock_msg2 = MagicMock()
+        mock_msg2.id = 102
+        mock_msg2.delete = AsyncMock()
+        mock_msg2.edit = AsyncMock()
+
+        channel = MagicMock()
+        channel.send = AsyncMock(side_effect=[mock_msg1, mock_msg2])
+
+        # 1. Join button moves down chat
+        inter_join = MagicMock()
+        user2 = MagicMock()
+        user2.id = 22222
+        user2.mention = "@Player2"
+        user2.display_name = "Player2"
+        inter_join.user = user2
+        inter_join.channel = channel
+        inter_join.response.is_done.return_value = False
+        inter_join.response.defer = AsyncMock()
+        inter_join.message = MagicMock()
+        inter_join.message.delete = AsyncMock()
+        view.message = inter_join.message
+
+        await view.join_btn.callback(inter_join)
+        self.assertTrue(inter_join.response.defer.called)
+        self.assertTrue(inter_join.message.delete.called)
+        self.assertTrue(channel.send.called)
+        self.assertEqual(view.message, mock_msg1)
+
+        # 2. Mode button moves down chat
+        inter_mode = MagicMock()
+        inter_mode.user = mock_host
+        inter_mode.channel = channel
+        inter_mode.response.is_done.return_value = False
+        inter_mode.response.defer = AsyncMock()
+        inter_mode.message = mock_msg1
+
+        await view.mode_btn.callback(inter_mode)
+        self.assertTrue(inter_mode.response.defer.called)
+        self.assertTrue(mock_msg1.delete.called)
+        self.assertEqual(view.message, mock_msg2)
+
+        # 3. Auto pull turn moves down chat
+        mock_msg3 = MagicMock()
+        mock_msg3.id = 103
+        mock_msg3.delete = AsyncMock()
+        mock_msg3.edit = AsyncMock()
+        channel.send = AsyncMock(return_value=mock_msg3)
+        mock_msg2.channel = channel
+
+        view.game.started = True
+        await view._auto_pull_turn()
+        self.assertTrue(mock_msg2.delete.called)
+        self.assertEqual(view.message, mock_msg3)
 
     async def test_russian_roulette_mute_and_listener(self):
         mock_bot = MagicMock()

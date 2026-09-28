@@ -20,6 +20,7 @@ Covers all Discord cogs in `cogs/` directory.
 6. `cogs/russian_roulette.py`:
    - Interactive turn-based revolver duel (solo or multiplayer lobby) with visual cylinder status.
    - Core game engine and view encapsulated in `utils/roulette_views.py` (`RussianRouletteGame`, `RussianRouletteView`).
+   - Active view dynamically moves down chat on turns, timeouts, and player actions by deleting the previous message and posting fresh at the bottom.
    - Animated GIF assets in `assets/roulette/`.
 7. `cogs/battle_tactics.py`:
    - Tactical battle support calculations and strategic suggestions.

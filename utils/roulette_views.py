@@ -1,5 +1,6 @@
 import os
 import asyncio
+import inspect
 import random
 import discord
 from discord.ext import commands
@@ -231,6 +232,7 @@ class RussianRouletteView(discord.ui.View):
         self._is_running: bool = False
         self.message: Optional[discord.Message] = None
         self._turn_task: Optional[asyncio.Task] = None
+        self._lock: asyncio.Lock = asyncio.Lock()
         self.update_buttons()
 
     def _start_turn_timer(self):
@@ -260,11 +262,7 @@ class RussianRouletteView(discord.ui.View):
         self.update_buttons()
         embed, gif_file = self.get_embed()
         files = [gif_file] if gif_file else []
-        if self.message:
-            try:
-                await self.message.edit(embed=embed, attachments=files, view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
+        await self._repost_view_message(embed=embed, attachments=files)
         if not self.game.game_over:
             self._start_turn_timer()
 
@@ -493,6 +491,83 @@ class RussianRouletteView(discord.ui.View):
                 self.game.players = [user]
         return True, None
 
+    async def _safe_edit_message(
+        self,
+        embed: discord.Embed,
+        attachments: Optional[List[discord.File]] = None,
+    ):
+        async with self._lock:
+            files = attachments if attachments is not None else []
+            if self.message and hasattr(self.message, "edit"):
+                try:
+                    res = self.message.edit(embed=embed, attachments=files, view=self)
+                    if inspect.isawaitable(res):
+                        await res
+                    return
+                except (discord.NotFound, discord.HTTPException) as e:
+                    print(f"[RussianRoulette] Failed to edit message: {e}")
+                except Exception:
+                    pass
+
+    async def _repost_view_message(
+        self,
+        interaction: Optional[discord.Interaction] = None,
+        embed: Optional[discord.Embed] = None,
+        attachments: Optional[List[discord.File]] = None,
+    ) -> Optional[discord.Message]:
+        async with self._lock:
+            if interaction and hasattr(interaction, "response") and not interaction.response.is_done():
+                try:
+                    res = interaction.response.defer()
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                except Exception:
+                    pass
+
+            channel = (
+                (interaction.channel if interaction else None)
+                or (self.message.channel if self.message else None)
+            )
+
+            msgs_to_delete = []
+            seen_ids = set()
+            for m in (self.message, getattr(interaction, "message", None)):
+                if m and getattr(m, "id", None) not in seen_ids:
+                    seen_ids.add(getattr(m, "id", None))
+                    msgs_to_delete.append(m)
+
+            for old_msg in msgs_to_delete:
+                if hasattr(old_msg, "delete"):
+                    try:
+                        res = old_msg.delete()
+                        if inspect.isawaitable(res):
+                            await res
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        pass
+                    except Exception:
+                        pass
+
+            files = attachments if attachments is not None else []
+            if channel and hasattr(channel, "send"):
+                try:
+                    res = channel.send(embed=embed, files=files, view=self)
+                    if inspect.isawaitable(res):
+                        new_msg = await res
+                    else:
+                        new_msg = res
+                    self.message = new_msg
+                    return new_msg
+                except Exception as e:
+                    print(f"[RussianRoulette] Failed to send new message: {e}")
+
+            if interaction:
+                await self._safe_edit_view_message(interaction, embed=embed, attachments=attachments)
+            elif self.message:
+                await self._safe_edit_message(embed=embed, attachments=attachments)
+            return self.message
+
     async def _safe_edit_view_message(
         self,
         interaction: discord.Interaction,
@@ -503,27 +578,33 @@ class RussianRouletteView(discord.ui.View):
 
         # 1. Prefer interaction.edit_original_response (required for webhook/slash command messages and ephemerals)
         try:
-            await interaction.edit_original_response(embed=embed, attachments=files, view=self)
+            res = interaction.edit_original_response(embed=embed, attachments=files, view=self)
+            if inspect.isawaitable(res):
+                await res
             return
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
-        except Exception as e:
+        except Exception:
             pass
 
         # 2. Try followup.edit_message with interaction.message.id
         try:
             if interaction.message:
-                await interaction.followup.edit_message(interaction.message.id, embed=embed, attachments=files, view=self)
+                res = interaction.followup.edit_message(interaction.message.id, embed=embed, attachments=files, view=self)
+                if inspect.isawaitable(res):
+                    await res
                 return
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
-        except Exception as e:
+        except Exception:
             pass
 
         # 3. Direct message.edit fallback (for standard bot messages)
         try:
             if interaction.message:
-                await interaction.message.edit(embed=embed, attachments=files, view=self)
+                res = interaction.message.edit(embed=embed, attachments=files, view=self)
+                if inspect.isawaitable(res):
+                    await res
                 return
         except Exception as e:
             print(f"[RussianRoulette] Failed to edit message: {e}")
@@ -541,17 +622,14 @@ class RussianRouletteView(discord.ui.View):
         for btn in self.children:
             btn.disabled = True
 
-        # Frame 1: Suspense animation
+        # Frame 1: Suspense animation -> Move down to bottom of chat
         suspense_embed, gif_file = self.get_suspense_embed(user, action_type=action_type)
         files1 = [gif_file] if gif_file else []
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=suspense_embed, attachments=files1, view=self)
-        else:
-            await self._safe_edit_view_message(interaction, embed=suspense_embed, attachments=files1)
+        await self._repost_view_message(interaction, embed=suspense_embed, attachments=files1)
 
         await asyncio.sleep(1.2)
 
-        # Frame 2: Reveal final outcome
+        # Frame 2: Reveal final outcome -> Edit the message at bottom in-place
         if action_type == "spin":
             is_hit, msg = self.game.spin_and_pull(user)
         else:
@@ -565,7 +643,7 @@ class RussianRouletteView(discord.ui.View):
         result_embed, result_file = self.get_embed()
         files2 = [result_file] if result_file else []
 
-        await self._safe_edit_view_message(interaction, embed=result_embed, attachments=files2)
+        await self._safe_edit_message(embed=result_embed, attachments=files2)
 
         if self.is_duel and not self.game.game_over:
             self._start_turn_timer()
@@ -577,10 +655,7 @@ class RussianRouletteView(discord.ui.View):
 
         start_embed, start_file = self.get_embed()
         start_files = [start_file] if start_file else []
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=start_embed, attachments=start_files, view=self)
-        else:
-            await self._safe_edit_view_message(interaction, embed=start_embed, attachments=start_files)
+        await self._repost_view_message(interaction, embed=start_embed, attachments=start_files)
 
         await asyncio.sleep(2.0)
 
@@ -588,14 +663,14 @@ class RussianRouletteView(discord.ui.View):
             while not self.game.game_over and len(self.game.alive_players) > 1:
                 current_player = self.game.alive_players[self.game.turn_index % len(self.game.alive_players)]
 
-                # Frame 1: Suspense animation
+                # Frame 1: Suspense animation -> Move down to bottom of chat
                 suspense_embed, suspense_file = self.get_suspense_embed(current_player, action_type="pull")
                 files_susp = [suspense_file] if suspense_file else []
-                await self._safe_edit_view_message(interaction, embed=suspense_embed, attachments=files_susp)
+                await self._repost_view_message(embed=suspense_embed, attachments=files_susp)
 
                 await asyncio.sleep(1.8)
 
-                # Frame 2: Execute turn
+                # Frame 2: Execute turn -> Edit in place
                 is_hit, msg = self.game.pull_trigger(current_player)
 
                 if is_hit:
@@ -604,7 +679,7 @@ class RussianRouletteView(discord.ui.View):
 
                 outcome_embed, outcome_file = self.get_embed()
                 files_out = [outcome_file] if outcome_file else []
-                await self._safe_edit_view_message(interaction, embed=outcome_embed, attachments=files_out)
+                await self._safe_edit_message(embed=outcome_embed, attachments=files_out)
 
                 if self.game.game_over:
                     break
@@ -614,7 +689,7 @@ class RussianRouletteView(discord.ui.View):
                     await asyncio.sleep(3.2)
                     self.game.start_next_round()
                     round_embed, _ = self.get_embed()
-                    await self._safe_edit_view_message(interaction, embed=round_embed, attachments=[])
+                    await self._repost_view_message(embed=round_embed, attachments=[])
                     await asyncio.sleep(2.0)
                 else:
                     # Safe click, pause before next survivor's turn
@@ -627,7 +702,7 @@ class RussianRouletteView(discord.ui.View):
             self.update_buttons()
             final_embed, final_file = self.get_embed()
             files_fin = [final_file] if final_file else []
-            await self._safe_edit_view_message(interaction, embed=final_embed, attachments=files_fin)
+            await self._safe_edit_message(embed=final_embed, attachments=files_fin)
 
     @discord.ui.button(label="Pull Trigger", style=discord.ButtonStyle.primary, emoji="🎲", row=0)
     async def trigger_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -678,7 +753,7 @@ class RussianRouletteView(discord.ui.View):
         self.update_buttons()
         embed, gif_file = self.get_embed()
         attachments = [gif_file] if gif_file else []
-        await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+        await self._repost_view_message(interaction, embed=embed, attachments=attachments)
 
     @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
     async def reload_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -700,7 +775,7 @@ class RussianRouletteView(discord.ui.View):
         self.update_buttons()
         embed, gif_file = self.get_embed()
         attachments = [gif_file] if gif_file else []
-        await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+        await self._repost_view_message(interaction, embed=embed, attachments=attachments)
 
     @discord.ui.button(label="Mode: Standard", style=discord.ButtonStyle.secondary, emoji="👑", row=1)
     async def mode_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -719,7 +794,7 @@ class RussianRouletteView(discord.ui.View):
         self.update_buttons()
         embed, gif_file = self.get_embed()
         attachments = [gif_file] if gif_file else []
-        await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+        await self._repost_view_message(interaction, embed=embed, attachments=attachments)
 
 
 class RouletteChallengeView(discord.ui.View):
