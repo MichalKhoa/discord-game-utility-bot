@@ -19,7 +19,7 @@ from utils.views import (
     UtilityMenuButtons,
 )
 from databases.player_database import PlayerDatabase
-from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, ASSETS_DIR, RussianRoulette
+from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, RouletteChallengeView, ASSETS_DIR, RussianRoulette
 from cogs.code_redeem import CodeRedeem, ConfirmAbortModal
 from cogs.player_manager import FlaggedPlayersView, PlayerListView
 from utils.redeem_code import redeem_for_all
@@ -291,6 +291,116 @@ class TestMenuViews(unittest.IsolatedAsyncioTestCase):
         view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6)
         view._mute_if_eliminated(channel_id=555, user_id=mock_user.id)
         self.assertTrue(cog.is_player_muted(555, mock_user.id))
+
+    async def test_russian_roulette_duels_and_challenges(self):
+        mock_bot = MagicMock()
+        cog = RussianRoulette(mock_bot)
+
+        challenger = MagicMock(spec=discord.Member)
+        challenger.id = 1001
+        challenger.display_name = "Challenger"
+        challenger.mention = "<@1001>"
+        challenger.bot = False
+        challenger.status = discord.Status.online
+
+        opponent = MagicMock(spec=discord.Member)
+        opponent.id = 1002
+        opponent.display_name = "Opponent"
+        opponent.mention = "<@1002>"
+        opponent.bot = False
+        opponent.status = discord.Status.online
+
+        interaction = MagicMock()
+        interaction.guild = MagicMock()
+        interaction.channel_id = 999
+        interaction.user = challenger
+
+        # 1. Validation tests
+        # A. Self challenge
+        self.assertIn("cannot challenge yourself", cog._validate_duel_target(interaction, challenger))
+
+        # B. Bot challenge
+        bot_target = MagicMock(spec=discord.Member)
+        bot_target.id = 1003
+        bot_target.bot = True
+        self.assertIn("cannot challenge a bot", cog._validate_duel_target(interaction, bot_target))
+
+        # C. Offline opponent
+        offline_target = MagicMock(spec=discord.Member)
+        offline_target.id = 1004
+        offline_target.bot = False
+        offline_target.status = discord.Status.offline
+        self.assertIn("offline or invisible", cog._validate_duel_target(interaction, offline_target))
+
+        # D. Challenger muted
+        cog.mute_player(999, challenger.id, 120.0)
+        self.assertIn("You are currently muted", cog._validate_duel_target(interaction, opponent))
+        cog.muted_users.clear()
+
+        # E. Opponent muted
+        cog.mute_player(999, opponent.id, 120.0)
+        self.assertIn("is currently muted", cog._validate_duel_target(interaction, opponent))
+        cog.muted_users.clear()
+
+        # F. Valid target
+        self.assertIsNone(cog._validate_duel_target(interaction, opponent))
+
+        # 2. Challenge view acceptance
+        challenge_view = RouletteChallengeView(mock_bot, challenger=challenger, opponent=opponent, chamber_size=6)
+        embed = challenge_view.get_challenge_embed()
+        self.assertIn("Duel Challenge", embed.title)
+
+        # Other user cannot accept
+        other_interaction = MagicMock()
+        other_interaction.user.id = 9999
+        other_interaction.response = AsyncMock()
+        await challenge_view.accept_btn.callback(other_interaction)
+        other_interaction.response.send_message.assert_awaited_once()
+
+        # Opponent accepts
+        opp_interaction = MagicMock()
+        opp_interaction.user.id = opponent.id
+        opp_interaction.response = AsyncMock()
+        opp_interaction.message = MagicMock()
+        await challenge_view.accept_btn.callback(opp_interaction)
+        opp_interaction.response.edit_message.assert_awaited_once()
+
+        # 3. Forced Duel: Rule of Force (Challenger must take first 2 pulls)
+        forced_game = RussianRouletteGame(chamber_size=6, is_forced_duel=True)
+        forced_game.players = [challenger, opponent]
+        forced_game.bullet_chamber = 6  # live round in chamber 6
+
+        # Pull 1: Challenger pulls chamber 1 (empty) -> must pull again!
+        is_hit, msg = forced_game.pull_trigger(challenger)
+        self.assertFalse(is_hit)
+        self.assertEqual(forced_game.forced_pulls_taken, 1)
+        self.assertEqual(forced_game.turn_index, 0)  # Still challenger's turn!
+        self.assertIn("Rule of Force", msg)
+
+        # Pull 2: Challenger pulls chamber 2 (empty) -> passes to opponent!
+        is_hit, msg = forced_game.pull_trigger(challenger)
+        self.assertFalse(is_hit)
+        self.assertEqual(forced_game.forced_pulls_taken, 2)
+        self.assertEqual(forced_game.turn_index, 1)  # Passes to opponent!
+        self.assertIn("Rule of Force Satisfied", msg)
+
+        # Pull 3: Opponent pulls chamber 3 (empty) -> passes to challenger!
+        is_hit, msg = forced_game.pull_trigger(opponent)
+        self.assertFalse(is_hit)
+        self.assertEqual(forced_game.turn_index, 0)  # Back to challenger!
+
+        # 4. Duel View turn checks and auto pull
+        duel_view = RussianRouletteView(mock_bot, host=challenger, chamber_size=6, is_duel=True, opponent=opponent, is_forced_duel=True)
+        duel_view.game.bullet_chamber = 1  # Hit on first chamber for auto-pull test
+        mock_bot.get_cog.return_value = cog
+        duel_view.message = MagicMock()
+        duel_view.message.channel.id = 999
+        duel_view.message.edit = AsyncMock()
+
+        await duel_view._auto_pull_turn()
+        self.assertTrue(duel_view.game.game_over)
+        self.assertEqual(duel_view.game.victim.id, challenger.id)
+        self.assertTrue(cog.is_player_muted(999, challenger.id))
 
     async def test_run_redeem_handles_forbidden_channel_send(self):
         mock_bot = MagicMock()

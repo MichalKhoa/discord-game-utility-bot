@@ -10,9 +10,11 @@ ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 
 class RussianRouletteGame:
-    def __init__(self, chamber_size: int = 6, mode: str = "standard"):
+    def __init__(self, chamber_size: int = 6, mode: str = "standard", is_forced_duel: bool = False):
         self.chamber_size = max(2, min(chamber_size, 12))
         self.mode: str = mode  # "standard" (sudden death lobby) or "lms" (battle royale)
+        self.is_forced_duel: bool = is_forced_duel
+        self.forced_pulls_taken: int = 0
         self.players: List[discord.Member | discord.User] = []
         self.alive_players: List[discord.Member | discord.User] = []
         self.eliminated_players: List[discord.Member | discord.User] = []
@@ -36,7 +38,7 @@ class RussianRouletteGame:
         self.current_chamber = 1
         self.turn_index = 0
         self.round_number = 1
-        self.started = False
+        self.started = False if len(self.players) <= 1 else True
         self.game_over = False
         self.winner = None
         self.victim = None
@@ -44,6 +46,8 @@ class RussianRouletteGame:
         self.eliminated_players = []
         if self.mode == "lms":
             self.last_action_msg = f"👑 LMS Lobby reset! {len(self.players)} players ready for Battle Royale."
+        elif len(self.players) == 2:
+            self.last_action_msg = f"🔄 Duel rematched! {self.players[0].mention} vs {self.players[1].mention}."
         else:
             self.last_action_msg = f"🔄 Cylinder spun! 1 live round hidden in {self.chamber_size} chambers."
 
@@ -96,7 +100,12 @@ class RussianRouletteGame:
                     msg = f"💥 **BANG!** Chamber `{chamber}/{self.chamber_size}` fired! {player.mention} was eliminated! (`{len(self.alive_players)}` survivors remain)"
             else:
                 self.game_over = True
-                msg = f"💥 **BANG!** Chamber `{chamber}/{self.chamber_size}` fired! {player.mention} was eliminated!"
+                if len(self.players) == 2:
+                    survivor = self.players[1] if player.id == self.players[0].id else self.players[0]
+                    self.winner = survivor
+                    msg = f"💥 **BANG!** Chamber `{chamber}/{self.chamber_size}` fired! {player.mention} was eliminated!\n\n🏆 **{survivor.mention} WINS THE DUEL!**"
+                else:
+                    msg = f"💥 **BANG!** Chamber `{chamber}/{self.chamber_size}` fired! {player.mention} was eliminated!"
 
             self.last_action_msg = msg
             return True, msg
@@ -108,12 +117,23 @@ class RussianRouletteGame:
 
             remaining = self.chamber_size - self.current_chamber + 1
             msg = f"💨 ***Click!*** Chamber `{chamber}/{self.chamber_size}` was empty! {player.mention} survived! (`{remaining}` chamber{'s' if remaining != 1 else ''} left)"
+
+            if self.is_forced_duel and self.forced_pulls_taken < 1:
+                self.forced_pulls_taken += 1
+                self.turn_index = 0
+                msg += f"\n⚠️ **Rule of Force:** {player.mention} survived pull 1/2 and must pull again!"
+            elif self.is_forced_duel and self.forced_pulls_taken == 1:
+                self.forced_pulls_taken += 1
+                self.is_forced_duel = False
+                self.turn_index = 1
+                opponent = self.players[1] if len(self.players) > 1 else player
+                msg += f"\n🛡️ **Rule of Force Satisfied:** {player.mention} survived both pulls! Turn passes to {opponent.mention}!"
+            else:
+                active_pool = self.alive_players if (self.mode == "lms" and self.started) else self.players
+                if len(active_pool) > 1:
+                    self.turn_index = (self.turn_index + 1) % len(active_pool)
+
             self.last_action_msg = msg
-
-            active_pool = self.alive_players if (self.mode == "lms" and self.started) else self.players
-            if len(active_pool) > 1:
-                self.turn_index = (self.turn_index + 1) % len(active_pool)
-
             return False, msg
 
     def spin_and_pull(self, player: discord.Member | discord.User) -> Tuple[bool, str]:
@@ -141,7 +161,12 @@ class RussianRouletteGame:
                     msg = f"🌀💨 *Spin... Spin...* 💥 **BANG!** {player.mention} was eliminated! (`{len(self.alive_players)}` survivors remain)"
             else:
                 self.game_over = True
-                msg = f"🌀💨 *Spin... Spin...* 💥 **BANG!** Cylinder landed on the live round! {player.mention} was eliminated!"
+                if len(self.players) == 2:
+                    survivor = self.players[1] if player.id == self.players[0].id else self.players[0]
+                    self.winner = survivor
+                    msg = f"🌀💨 *Spin... Spin...* 💥 **BANG!** Cylinder landed on the live round! {player.mention} was eliminated!\n\n🏆 **{survivor.mention} WINS THE DUEL!**"
+                else:
+                    msg = f"🌀💨 *Spin... Spin...* 💥 **BANG!** Cylinder landed on the live round! {player.mention} was eliminated!"
 
             self.last_action_msg = msg
             return True, msg
@@ -149,28 +174,103 @@ class RussianRouletteGame:
             self.current_chamber += 1
             remaining = self.chamber_size - self.current_chamber + 1
             msg = f"🌀💨 *Spin... Spin...* 💨 ***Click!*** Safe! {player.mention} survived the spin! (`{remaining}` chamber{'s' if remaining != 1 else ''} left)"
+
+            if self.is_forced_duel and self.forced_pulls_taken < 1:
+                self.forced_pulls_taken += 1
+                self.turn_index = 0
+                msg += f"\n⚠️ **Rule of Force:** {player.mention} survived pull 1/2 and must pull again!"
+            elif self.is_forced_duel and self.forced_pulls_taken == 1:
+                self.forced_pulls_taken += 1
+                self.is_forced_duel = False
+                self.turn_index = 1
+                opponent = self.players[1] if len(self.players) > 1 else player
+                msg += f"\n🛡️ **Rule of Force Satisfied:** {player.mention} survived both pulls! Turn passes to {opponent.mention}!"
+            else:
+                active_pool = self.alive_players if (self.mode == "lms" and self.started) else self.players
+                if len(active_pool) > 1:
+                    self.turn_index = (self.turn_index + 1) % len(active_pool)
+
             self.last_action_msg = msg
-
-            active_pool = self.alive_players if (self.mode == "lms" and self.started) else self.players
-            if len(active_pool) > 1:
-                self.turn_index = (self.turn_index + 1) % len(active_pool)
-
             return False, msg
 
 
 class RussianRouletteView(discord.ui.View):
-    def __init__(self, bot: commands.Bot, host: discord.Member | discord.User, chamber_size: int = 6, mode: str = "standard"):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        host: discord.Member | discord.User,
+        chamber_size: int = 6,
+        mode: str = "standard",
+        is_duel: bool = False,
+        opponent: Optional[discord.Member | discord.User] = None,
+        is_forced_duel: bool = False,
+    ):
         super().__init__(timeout=3600)
         self.bot = bot
         self.host = host
-        self.game = RussianRouletteGame(chamber_size=chamber_size, mode=mode)
+        self.is_duel = is_duel
+        self.is_forced_duel = is_forced_duel
+        self.opponent = opponent
+        self.game = RussianRouletteGame(chamber_size=chamber_size, mode=mode, is_forced_duel=is_forced_duel)
         self.game.players.append(host)
         self.game.alive_players.append(host)
+        if is_duel and opponent:
+            self.game.players.append(opponent)
+            self.game.alive_players.append(opponent)
+            self.game.started = True
+            if is_forced_duel:
+                self.game.last_action_msg = (
+                    f"⚔️ **FORCED DUEL!** {host.mention} forced {opponent.mention} into Russian Roulette!\n"
+                    f"⚠️ **Rule of Force:** {host.mention} must take the **first TWO pulls**!"
+                )
+            else:
+                self.game.last_action_msg = (
+                    f"⚔️ **DUEL COMMENCED!** {host.mention} vs {opponent.mention}!\n"
+                    f"🎲 {host.mention} takes the first shot."
+                )
         self._is_running: bool = False
         self.message: Optional[discord.Message] = None
+        self._turn_task: Optional[asyncio.Task] = None
         self.update_buttons()
 
+    def _start_turn_timer(self):
+        if self._turn_task and not self._turn_task.done():
+            self._turn_task.cancel()
+        if self.is_duel and self.game.started and not self.game.game_over:
+            self._turn_task = asyncio.create_task(self._turn_timer_coro())
+
+    async def _turn_timer_coro(self):
+        try:
+            await asyncio.sleep(60.0)
+            if self.game.game_over or not self.game.started:
+                return
+            await self._auto_pull_turn()
+        except asyncio.CancelledError:
+            pass
+
+    async def _auto_pull_turn(self):
+        if self.game.game_over or not self.game.started or len(self.game.players) < 2:
+            return
+        current_player = self.game.players[self.game.turn_index]
+        is_hit, msg = self.game.pull_trigger(current_player)
+        if is_hit:
+            ch_id = self.message.channel.id if self.message else None
+            self._mute_if_eliminated(ch_id, current_player.id)
+        self.game.last_action_msg = f"⏱️ *Time's up!* Trigger auto-fired for {current_player.mention}!\n" + msg
+        self.update_buttons()
+        embed, gif_file = self.get_embed()
+        files = [gif_file] if gif_file else []
+        if self.message:
+            try:
+                await self.message.edit(embed=embed, attachments=files, view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        if not self.game.game_over:
+            self._start_turn_timer()
+
     async def on_timeout(self):
+        if self._turn_task and not self._turn_task.done():
+            self._turn_task.cancel()
         for btn in self.children:
             btn.disabled = True
         if self.message:
@@ -188,12 +288,19 @@ class RussianRouletteView(discord.ui.View):
         is_lms = (self.game.mode == "lms")
         self.trigger_btn.disabled = is_lms or self.game.game_over
         self.spin_btn.disabled = is_lms or self.game.game_over
-        self.start_lms_btn.disabled = (not is_lms) or self.game.started or self.game.game_over or (len(self.game.players) < 2)
-        self.join_btn.disabled = self.game.started or self.game.game_over
-        self.reload_btn.disabled = False
-        self.mode_btn.disabled = self.game.started or self.game.game_over
-        self.mode_btn.label = "Mode: LMS (Auto)" if is_lms else "Mode: Standard"
-        self.mode_btn.style = discord.ButtonStyle.danger if is_lms else discord.ButtonStyle.secondary
+
+        if self.is_duel:
+            self.start_lms_btn.disabled = True
+            self.join_btn.disabled = True
+            self.mode_btn.disabled = True
+            self.reload_btn.disabled = not self.game.game_over
+        else:
+            self.start_lms_btn.disabled = (not is_lms) or self.game.started or self.game.game_over or (len(self.game.players) < 2)
+            self.join_btn.disabled = self.game.started or self.game.game_over
+            self.reload_btn.disabled = False
+            self.mode_btn.disabled = self.game.started or self.game.game_over
+            self.mode_btn.label = "Mode: LMS (Auto)" if is_lms else "Mode: Standard"
+            self.mode_btn.style = discord.ButtonStyle.danger if is_lms else discord.ButtonStyle.secondary
 
     @staticmethod
     def _get_danger_bar(remaining: int, total_length: int = 10) -> Tuple[str, int]:
@@ -335,7 +442,23 @@ class RussianRouletteView(discord.ui.View):
                 graveyard_list = [f"💀 ~~{p.display_name}~~" for p in self.game.eliminated_players]
                 embed.add_field(name=f"🪦 Fallen ({len(self.game.eliminated_players)})", value="\n".join(graveyard_list), inline=True)
         else:
-            if total_players > 1:
+            if self.is_duel and len(self.game.players) == 2:
+                p1, p2 = self.game.players[0], self.game.players[1]
+                p1_turn = (self.game.started and not self.game.game_over and self.game.turn_index == 0)
+                p2_turn = (self.game.started and not self.game.game_over and self.game.turn_index == 1)
+
+                tag1 = " *(Mandatory Pull 1/2)*" if (p1_turn and self.game.is_forced_duel and self.game.forced_pulls_taken == 0) else \
+                       " *(Mandatory Pull 2/2)*" if (p1_turn and self.game.is_forced_duel and self.game.forced_pulls_taken == 1) else \
+                       " *(Turn)*" if p1_turn else ""
+                tag2 = " *(Turn)*" if p2_turn else ""
+
+                duel_list = [
+                    f"{'👉 ' if p1_turn else '• '}**{p1.display_name}** *(Challenger)*{tag1}",
+                    f"{'👉 ' if p2_turn else '• '}**{p2.display_name}** *(Opponent)*{tag2}"
+                ]
+                duel_title = "⚔️ 1v1 Forced Duel" if self.is_forced_duel else "⚔️ 1v1 High-Stakes Duel"
+                embed.add_field(name=duel_title, value="\n".join(duel_list), inline=False)
+            elif total_players > 1:
                 player_list = []
                 for i, p in enumerate(self.game.players):
                     is_turn = (self.game.started and not self.game.game_over and i == self.game.turn_index)
@@ -350,7 +473,7 @@ class RussianRouletteView(discord.ui.View):
                     inline=False
                 )
 
-        mode_text = "Last Man Standing (Auto-Rounds)" if self.game.mode == "lms" else "Standard (Manual)"
+        mode_text = "Last Man Standing (Auto-Rounds)" if self.game.mode == "lms" else ("Forced Duel" if self.is_forced_duel else ("1v1 Duel" if self.is_duel else "Standard (Manual)"))
         embed.set_footer(text=f"Host: {self.host.display_name} • Mode: {mode_text} • Round {self.game.round_number}")
         return embed, gif_file
 
@@ -361,6 +484,9 @@ class RussianRouletteView(discord.ui.View):
         if len(self.game.players) > 1 and self.game.started:
             current_player = self.game.players[self.game.turn_index]
             if user.id != current_player.id:
+                if self.is_forced_duel and self.game.forced_pulls_taken < 2 and current_player.id == self.host.id:
+                    pull_num = self.game.forced_pulls_taken + 1
+                    return False, f"⚠️ **Rule of Force:** {self.host.mention} must take mandatory pull `{pull_num}/2`!"
                 return False, f"⏳ It is {current_player.mention}'s turn to pull the trigger!"
         elif len(self.game.players) == 1:
             if user.id not in [p.id for p in self.game.players]:
@@ -409,6 +535,9 @@ class RussianRouletteView(discord.ui.View):
             await interaction.response.send_message(err, ephemeral=True)
             return
 
+        if self._turn_task and not self._turn_task.done():
+            self._turn_task.cancel()
+
         for btn in self.children:
             btn.disabled = True
 
@@ -437,6 +566,9 @@ class RussianRouletteView(discord.ui.View):
         files2 = [result_file] if result_file else []
 
         await self._safe_edit_view_message(interaction, embed=result_embed, attachments=files2)
+
+        if self.is_duel and not self.game.game_over:
+            self._start_turn_timer()
 
     async def _run_lms_loop(self, interaction: discord.Interaction):
         """Automated round loop for Last Man Standing mode."""
@@ -550,7 +682,21 @@ class RussianRouletteView(discord.ui.View):
 
     @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
     async def reload_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.is_duel and not self.game.game_over:
+            await interaction.response.send_message("❌ Cannot reset duel while in progress.", ephemeral=True)
+            return
+        if self.is_duel and interaction.user.id not in [p.id for p in self.game.players]:
+            await interaction.response.send_message("❌ Only duel participants can reset the duel.", ephemeral=True)
+            return
+
         self.game.reset()
+        if self.is_duel:
+            self.game.started = True
+            if self.is_forced_duel:
+                self.game.is_forced_duel = True
+                self.game.forced_pulls_taken = 0
+            self._start_turn_timer()
+
         self.update_buttons()
         embed, gif_file = self.get_embed()
         attachments = [gif_file] if gif_file else []
@@ -574,3 +720,90 @@ class RussianRouletteView(discord.ui.View):
         embed, gif_file = self.get_embed()
         attachments = [gif_file] if gif_file else []
         await interaction.response.edit_message(embed=embed, attachments=attachments, view=self)
+
+
+class RouletteChallengeView(discord.ui.View):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        challenger: discord.Member | discord.User,
+        opponent: discord.Member,
+        chamber_size: int = 6,
+    ):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.challenger = challenger
+        self.opponent = opponent
+        self.chamber_size = chamber_size
+        self.message: Optional[discord.Message] = None
+
+    def get_challenge_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="⚔️ Russian Roulette: Duel Challenge!",
+            description=(
+                f"**{self.challenger.mention}** has challenged **{self.opponent.mention}** to a 1v1 Russian Roulette duel!\n\n"
+                f"🎯 **Cylinder:** `{self.chamber_size}` chambers (1 live round)\n"
+                f"💀 **Stakes:** Loser is **muted for 2 minutes** in this channel!\n\n"
+                f"⏳ {self.opponent.mention}, click **Accept** to face the barrel or **Decline** to forfeit (Expires in 60s)."
+            ),
+            colour=discord.Colour.orange()
+        )
+        if self.bot.user:
+            embed.set_author(name="RUSSIAN ROULETTE // DUEL INVITATION", icon_url=self.bot.user.display_avatar.url)
+        return embed
+
+    async def on_timeout(self):
+        for btn in self.children:
+            btn.disabled = True
+        if self.message:
+            embed = discord.Embed(
+                title="⏳ Challenge Expired",
+                description=f"{self.opponent.mention} did not respond to {self.challenger.mention}'s duel challenge in time.",
+                colour=discord.Colour.dark_grey()
+            )
+            try:
+                await self.message.edit(embed=embed, view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+    @discord.ui.button(label="Accept Duel", style=discord.ButtonStyle.success, emoji="⚔️")
+    async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent.id:
+            await interaction.response.send_message("❌ Only the challenged player can accept this duel.", ephemeral=True)
+            return
+
+        duel_view = RussianRouletteView(
+            self.bot,
+            host=self.challenger,
+            chamber_size=self.chamber_size,
+            mode="standard",
+            is_duel=True,
+            opponent=self.opponent,
+            is_forced_duel=False,
+        )
+        embed, gif_file = duel_view.get_embed()
+        files = [gif_file] if gif_file else []
+        await interaction.response.edit_message(content=None, embed=embed, attachments=files, view=duel_view)
+        duel_view.message = interaction.message or self.message
+        duel_view._start_turn_timer()
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def decline_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in (self.opponent.id, self.challenger.id):
+            await interaction.response.send_message("❌ Only the challenger or opponent can decline.", ephemeral=True)
+            return
+
+        for btn in self.children:
+            btn.disabled = True
+        decliner = interaction.user
+        desc = (
+            f"🏳️ {self.opponent.mention} declined {self.challenger.mention}'s challenge."
+            if decliner.id == self.opponent.id
+            else f"🏳️ {self.challenger.mention} cancelled the duel challenge."
+        )
+        embed = discord.Embed(
+            title="🏳️ Duel Cancelled",
+            description=desc,
+            colour=discord.Colour.red()
+        )
+        await interaction.response.edit_message(content=None, embed=embed, attachments=[], view=self)
