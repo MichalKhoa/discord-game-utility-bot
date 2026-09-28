@@ -203,6 +203,14 @@ class RussianRouletteView(discord.ui.View):
         bar = "█" * filled + "░" * empty
         return bar, pct
 
+    def _mute_if_eliminated(self, channel_id: Optional[int], user_id: int):
+        if not channel_id or not self.bot:
+            return
+        if hasattr(self.bot, "get_cog"):
+            cog = self.bot.get_cog("RussianRoulette")
+            if cog and hasattr(cog, "mute_player"):
+                cog.mute_player(channel_id, user_id, duration_seconds=120.0)
+
     def get_suspense_embed(self, player: discord.Member | discord.User, action_type: str = "pull") -> Tuple[discord.Embed, Optional[discord.File]]:
         spinning_cylinder = " ".join(["💫"] * self.game.chamber_size)
         if action_type == "spin":
@@ -420,6 +428,10 @@ class RussianRouletteView(discord.ui.View):
         else:
             is_hit, msg = self.game.pull_trigger(user)
 
+        if is_hit:
+            ch_id = interaction.channel_id or (self.message.channel.id if self.message else None)
+            self._mute_if_eliminated(ch_id, user.id)
+
         self.update_buttons()
         result_embed, result_file = self.get_embed()
         files2 = [result_file] if result_file else []
@@ -453,6 +465,10 @@ class RussianRouletteView(discord.ui.View):
 
                 # Frame 2: Execute turn
                 is_hit, msg = self.game.pull_trigger(current_player)
+
+                if is_hit:
+                    ch_id = interaction.channel_id or (self.message.channel.id if self.message else None)
+                    self._mute_if_eliminated(ch_id, current_player.id)
 
                 outcome_embed, outcome_file = self.get_embed()
                 files_out = [outcome_file] if outcome_file else []

@@ -19,7 +19,7 @@ from utils.views import (
     UtilityMenuButtons,
 )
 from databases.player_database import PlayerDatabase
-from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, ASSETS_DIR
+from cogs.russian_roulette import RussianRouletteGame, RussianRouletteView, ASSETS_DIR, RussianRoulette
 from cogs.code_redeem import CodeRedeem, ConfirmAbortModal
 from cogs.player_manager import FlaggedPlayersView, PlayerListView
 from utils.redeem_code import redeem_for_all
@@ -218,6 +218,79 @@ class TestMenuViews(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(interaction.response.edit_message.called)
         # Verify frame 2 used edit_original_response (fixes webhook message bug)
         self.assertTrue(interaction.edit_original_response.called)
+
+    async def test_russian_roulette_mute_and_listener(self):
+        mock_bot = MagicMock()
+        cog = RussianRoulette(mock_bot)
+
+        # 1. Test mute_player & is_player_muted
+        channel_id = 999
+        user_id = 12345
+        cog.mute_player(channel_id=channel_id, user_id=user_id, duration_seconds=120.0)
+
+        self.assertTrue(cog.is_player_muted(channel_id, user_id))
+        self.assertFalse(cog.is_player_muted(channel_id, 99999))
+        self.assertFalse(cog.is_player_muted(888, user_id))
+
+        # 2. Test expiration
+        cog.mute_player(channel_id=channel_id, user_id=user_id, duration_seconds=-1.0)
+        self.assertFalse(cog.is_player_muted(channel_id, user_id))
+
+        # 3. Test on_message listener deletes muted user message
+        cog.mute_player(channel_id=channel_id, user_id=user_id, duration_seconds=120.0)
+
+        msg_muted = MagicMock()
+        msg_muted.guild = MagicMock()
+        msg_muted.author = MagicMock()
+        msg_muted.author.bot = False
+        msg_muted.author.id = user_id
+        msg_muted.channel = MagicMock()
+        msg_muted.channel.id = channel_id
+        msg_muted.delete = AsyncMock()
+
+        await cog.on_message(msg_muted)
+        msg_muted.delete.assert_awaited_once()
+
+        # 4. Test on_message ignores unmuted user
+        msg_other = MagicMock()
+        msg_other.guild = MagicMock()
+        msg_other.author = MagicMock()
+        msg_other.author.bot = False
+        msg_other.author.id = 88888
+        msg_other.channel = MagicMock()
+        msg_other.channel.id = channel_id
+        msg_other.delete = AsyncMock()
+
+        await cog.on_message(msg_other)
+        msg_other.delete.assert_not_called()
+
+        # 5. Test on_message ignores bot message
+        msg_bot = MagicMock()
+        msg_bot.guild = MagicMock()
+        msg_bot.author = MagicMock()
+        msg_bot.author.bot = True
+        msg_bot.author.id = user_id
+        msg_bot.channel = MagicMock()
+        msg_bot.channel.id = channel_id
+        msg_bot.delete = AsyncMock()
+
+        await cog.on_message(msg_bot)
+        msg_bot.delete.assert_not_called()
+
+        # 6. Test on_message ignores DM
+        msg_dm = MagicMock()
+        msg_dm.guild = None
+        msg_dm.delete = AsyncMock()
+        await cog.on_message(msg_dm)
+        msg_dm.delete.assert_not_called()
+
+        # 7. Test RussianRouletteView calls mute on elimination
+        mock_bot.get_cog.return_value = cog
+        mock_user = MagicMock()
+        mock_user.id = 77777
+        view = RussianRouletteView(mock_bot, host=mock_user, chamber_size=6)
+        view._mute_if_eliminated(channel_id=555, user_id=mock_user.id)
+        self.assertTrue(cog.is_player_muted(555, mock_user.id))
 
     async def test_run_redeem_handles_forbidden_channel_send(self):
         mock_bot = MagicMock()

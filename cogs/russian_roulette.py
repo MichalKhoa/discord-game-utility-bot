@@ -1,3 +1,5 @@
+import time
+from typing import Dict, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -10,6 +12,33 @@ __all__ = ["RussianRouletteGame", "RussianRouletteView", "ASSETS_DIR", "RussianR
 class RussianRoulette(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.muted_users: Dict[Tuple[int, int], float] = {}  # (channel_id, user_id) -> expiry_timestamp
+
+    def mute_player(self, channel_id: int, user_id: int, duration_seconds: float = 120.0):
+        """Mutes an eliminated player in a specific channel for duration_seconds."""
+        now = time.time()
+        self.muted_users = {k: exp for k, exp in self.muted_users.items() if exp > now}
+        self.muted_users[(channel_id, user_id)] = now + duration_seconds
+
+    def is_player_muted(self, channel_id: int, user_id: int) -> bool:
+        """Checks if a player is currently muted in a channel."""
+        expiry = self.muted_users.get((channel_id, user_id))
+        if not expiry:
+            return False
+        if time.time() > expiry:
+            self.muted_users.pop((channel_id, user_id), None)
+            return False
+        return True
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if not message.guild or message.author.bot:
+            return
+        if self.is_player_muted(message.channel.id, message.author.id):
+            try:
+                await message.delete()
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
 
     async def start_game(self, interaction: discord.Interaction, chamber_size: int = 6, mode: str = "standard"):
         view = RussianRouletteView(self.bot, host=interaction.user, chamber_size=chamber_size, mode=mode)
