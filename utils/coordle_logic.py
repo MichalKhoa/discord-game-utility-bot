@@ -339,7 +339,7 @@ def build_rules_embed() -> discord.Embed:
     embed.add_field(
         name="🏅 Point Scoring (Base-5)",
         value=(
-            "• 🟩 **New Green Discovered**: `+10 pts` (First time a letter spot is found)\n"
+            "• 🟩 **New Green Discovered**: `+10 pts` (Fresh position) / `+5 pts` (Upgrade if previously revealed as Yellow)\n"
             "• 🟨 **New Yellow Discovered**: `+5 pts` (First time a secret letter is revealed)\n"
             "• 🎯 **Solve Bonus**: `Letters Left to Guess × 5 pts`\n"
             "  *(Tap-in solves with 1 letter left give only `+5 pts` to prevent word stealing; "
@@ -397,6 +397,7 @@ class CoordleGame:
         # Discovery tracking for points
         self.known_green_indices: Set[int] = set()
         self.known_target_chars: Set[str] = set()
+        self.known_yellow_chars: Set[str] = set()
 
         # Timing: 24-hour expiration for standard games, or 300s running clock for Blitz
         self.created_at: float = time.time()
@@ -459,27 +460,33 @@ class CoordleGame:
 
         # Point calculations (simple base-5):
         # 🟨 New Yellow: +5 pts
-        # 🟩 New Green: +10 pts
+        # 🟩 Fresh Green: +10 pts (or +5 pts upgrade if previously revealed as Yellow)
         letters_to_guess_before = self.word_length - len(self.known_green_indices)
         guess_points = 0
         new_greens = 0
         new_yellows = 0
         discoveries: List[str] = []
 
-        # Newly discovered green positions (+10 pts each)
+        # Newly discovered green positions (+10 pts fresh, or +5 pts upgrade if previously yellow)
         for i, status in enumerate(eval_result):
             if status == 'G' and i not in self.known_green_indices:
                 self.known_green_indices.add(i)
-                guess_points += 10
+                char = guess[i]
+                if char in self.known_yellow_chars:
+                    self.known_yellow_chars.discard(char)
+                    guess_points += 5
+                else:
+                    guess_points += 10
                 new_greens += 1
-                self.known_target_chars.add(guess[i])
-                discoveries.append(f"🟩{guess[i]}")
+                self.known_target_chars.add(char)
+                discoveries.append(f"🟩{char}")
 
         # Newly discovered yellow letters (+5 pts each)
         for i, status in enumerate(eval_result):
             char = guess[i]
             if status == 'Y' and char not in self.known_target_chars:
                 self.known_target_chars.add(char)
+                self.known_yellow_chars.add(char)
                 guess_points += 5
                 new_yellows += 1
                 discoveries.append(f"🟨{char}")

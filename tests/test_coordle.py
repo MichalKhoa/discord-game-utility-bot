@@ -66,6 +66,45 @@ class TestCoordleGameAndBoard(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pts, 0)
         self.assertEqual(game.guesses[-1][4], [])
 
+    def test_yellow_to_green_upgrade_points(self):
+        # Target: PLANT
+        game = CoordleGame("PLANT", max_attempts=6)
+
+        # 1st guess: TRAIN
+        # T: Y (+5 pts), R: B, A: G (+10 pts fresh), I: B, N: Y (+5 pts)
+        # Total points: 20 pts
+        over, msg, pts = game.submit_guess("TRAIN", self.mock_user)
+        self.assertFalse(over)
+        self.assertEqual(pts, 20)
+        self.assertEqual(game.known_yellow_chars, {"T", "N"})
+        self.assertEqual(game.known_target_chars, {"T", "A", "N"})
+        self.assertEqual(game.known_green_indices, {2})
+        self.assertEqual(game.guesses[-1][4], ["🟩A", "🟨T", "🟨N"])
+
+        # 2nd guess: SLANT
+        # S: B, L: G (+10 pts fresh), A: G (already green: 0 pts),
+        # N: G (+5 pts upgrade from yellow), T: G (+5 pts upgrade from yellow)
+        # Total points: 10 + 5 + 5 = 20 pts
+        over, msg, pts = game.submit_guess("SLANT", self.mock_user_two)
+        self.assertFalse(over)
+        self.assertEqual(pts, 20)
+        self.assertEqual(game.known_yellow_chars, set())
+        self.assertEqual(game.known_green_indices, {1, 2, 3, 4})
+        self.assertEqual(game.guesses[-1][4], ["🟩L", "🟩N", "🟩T"])
+
+        # 3rd guess: PLANT (Solve!)
+        # P: G (+10 pts fresh)
+        # Letters left before solve = 1 -> solve bonus = 1 * 5 = 5 pts
+        # Guess points = 10 (P) + 5 (solve bonus) = 15 pts
+        over, msg, pts = game.submit_guess("PLANT", self.mock_user)
+        self.assertTrue(over)
+        self.assertTrue(game.won)
+        self.assertEqual(pts, 15)
+        # PlayerOne: 20 (guess 1) + 15 (guess 3) + 10 (win bonus) = 45 pts
+        self.assertEqual(game.participants[self.mock_user.id]["points"], 45)
+        # PlayerTwo: 20 (guess 2) + 10 (win bonus) = 30 pts
+        self.assertEqual(game.participants[self.mock_user_two.id]["points"], 30)
+
     def test_render_coordle_board_image(self):
         # Test image generation for empty game and with guesses
         buf_empty = render_coordle_board([], {}, word_length=5, max_attempts=6)
