@@ -478,5 +478,223 @@ class TestCoordleSession(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(100, mock_cog.active_sessions)
 
 
+class TestCoordlePeriodicSpawn(unittest.IsolatedAsyncioTestCase):
+    async def test_spawn_database_operations(self):
+        import tempfile
+        import os
+        from databases.coordle_database import CoordleDatabase
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_spawn.db")
+            db = CoordleDatabase(db_path)
+            await db.init_db()
+
+            guild_id = 12345
+            channel_id = 67890
+            role_id = 99999
+
+            # 1. Set spawn channel
+            await db.set_spawn_channel(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                role_id=role_id,
+                word_length=6,
+                max_attempts=8,
+                mode="blitz"
+            )
+
+            # 2. Retrieve spawn channel
+            cfg = await db.get_spawn_channel(guild_id)
+            self.assertIsNotNone(cfg)
+            self.assertEqual(cfg["guild_id"], guild_id)
+            self.assertEqual(cfg["channel_id"], channel_id)
+            self.assertEqual(cfg["role_id"], role_id)
+            self.assertEqual(cfg["word_length"], 6)
+            self.assertEqual(cfg["max_attempts"], 8)
+            self.assertEqual(cfg["mode"], "blitz")
+
+            # 3. Update existing config
+            await db.set_spawn_channel(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                role_id=None,
+                word_length=0,
+                max_attempts=6,
+                mode="normal"
+            )
+            updated = await db.get_spawn_channel(guild_id)
+            self.assertIsNone(updated["role_id"])
+            self.assertEqual(updated["word_length"], 0)
+            self.assertEqual(updated["mode"], "normal")
+
+            # 4. Get all spawn channels
+            all_cfgs = await db.get_all_spawn_channels()
+            self.assertEqual(len(all_cfgs), 1)
+            self.assertEqual(all_cfgs[0]["guild_id"], guild_id)
+
+            # 5. Remove spawn channel
+            await db.remove_spawn_channel(guild_id)
+            self.assertIsNone(await db.get_spawn_channel(guild_id))
+            self.assertEqual(len(await db.get_all_spawn_channels()), 0)
+
+    async def test_coordle_spawn_channel_command(self):
+        from cogs.coordle import Coordle
+        import tempfile
+        import os
+        from databases.coordle_database import CoordleDatabase
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_cmd.db")
+            db = CoordleDatabase(db_path)
+            await db.init_db()
+
+            mock_bot = MagicMock()
+            cog = Coordle(mock_bot)
+            cog.db = db
+
+            mock_guild = MagicMock(spec=discord.Guild)
+            mock_guild.id = 55555
+
+            mock_channel = MagicMock(spec=discord.TextChannel)
+            mock_channel.id = 66666
+            mock_channel.mention = "<#66666>"
+
+            mock_role = MagicMock(spec=discord.Role)
+            mock_role.id = 77777
+            mock_role.mention = "<@&77777>"
+
+            # Test 1: Set successfully
+            mock_inter = MagicMock(spec=discord.Interaction)
+            mock_inter.guild = mock_guild
+            mock_inter.response = MagicMock()
+            mock_inter.response.send_message = AsyncMock()
+
+            await cog.coordle_spawn_channel_cmd.callback(
+                cog,
+                mock_inter,
+                action="set",
+                channel=mock_channel,
+                role=mock_role,
+                length=5,
+                attempts=6,
+                mode="normal"
+            )
+            mock_inter.response.send_message.assert_called_once()
+            call_kwargs = mock_inter.response.send_message.call_args[1]
+            self.assertIn("embed", call_kwargs)
+            self.assertIn("Periodic Co-ordle Spawns Configured", call_kwargs["embed"].title)
+
+            # Verify in DB
+            saved = await db.get_spawn_channel(55555)
+            self.assertEqual(saved["channel_id"], 66666)
+            self.assertEqual(saved["role_id"], 77777)
+
+            # Test 2: Invalid word length
+            mock_inter.response.send_message.reset_mock()
+            await cog.coordle_spawn_channel_cmd.callback(
+                cog,
+                mock_inter,
+                action="set",
+                channel=mock_channel,
+                length=10,
+                attempts=6
+            )
+            mock_inter.response.send_message.assert_called_once()
+            self.assertIn("Word length must be", mock_inter.response.send_message.call_args[0][0])
+
+            # Test 3: Status check
+            mock_bot.get_channel.return_value = mock_channel
+            mock_inter.response.send_message.reset_mock()
+            await cog.coordle_spawn_channel_cmd.callback(
+                cog,
+                mock_inter,
+                action="status"
+            )
+            mock_inter.response.send_message.assert_called_once()
+            status_embed = mock_inter.response.send_message.call_args[1]["embed"]
+            self.assertIn("Periodic Co-ordle Spawn Settings", status_embed.title)
+
+            # Test 4: Remove
+            mock_inter.response.send_message.reset_mock()
+            await cog.coordle_spawn_channel_cmd.callback(
+                cog,
+                mock_inter,
+                action="remove"
+            )
+            mock_inter.response.send_message.assert_called_once()
+            self.assertIn("Removed periodic Co-ordle spawn", mock_inter.response.send_message.call_args[0][0])
+            self.assertIsNone(await db.get_spawn_channel(55555))
+
+    async def test_periodic_spawn_broadcast_lifecycle(self):
+        from cogs.coordle import Coordle
+        import tempfile
+        import os
+        from databases.coordle_database import CoordleDatabase
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            db_path = os.path.join(tmpdir, "test_broadcast.db")
+            db = CoordleDatabase(db_path)
+            await db.init_db()
+
+            mock_bot = MagicMock()
+            cog = Coordle(mock_bot)
+            cog.db = db
+
+            guild_id = 88888
+            channel_id = 99999
+            role_id = 11111
+
+            await db.set_spawn_channel(
+                guild_id=guild_id,
+                channel_id=channel_id,
+                role_id=role_id,
+                word_length=5,
+                max_attempts=6,
+                mode="normal"
+            )
+
+            mock_msg = MagicMock(spec=discord.Message)
+            mock_msg.edit = AsyncMock()
+
+            mock_channel = MagicMock(spec=discord.TextChannel)
+            mock_channel.id = channel_id
+            mock_channel.send = AsyncMock(return_value=mock_msg)
+            mock_bot.get_channel.return_value = mock_channel
+
+            # 1st Broadcast: New puzzle spawns
+            await cog.periodic_spawn_broadcast()
+
+            mock_channel.send.assert_called_once()
+            send_kwargs = mock_channel.send.call_args[1]
+            self.assertIn(f"<@&{role_id}>", send_kwargs["content"])
+            self.assertIn(channel_id, cog.active_spawn_games)
+
+            first_view = cog.active_spawn_games[channel_id]
+            self.assertFalse(first_view.game.game_over)
+            self.assertEqual(first_view.message, mock_msg)
+
+            # 2nd Broadcast: First puzzle should be expired/timed out, and 2nd spawned
+            mock_msg2 = MagicMock(spec=discord.Message)
+            mock_msg2.edit = AsyncMock()
+            mock_channel.send.reset_mock()
+            mock_channel.send.return_value = mock_msg2
+
+            await cog.periodic_spawn_broadcast()
+
+            # First game must be concluded and its message edited
+            self.assertTrue(first_view.game.game_over)
+            self.assertTrue(first_view.game.expired)
+            mock_msg.edit.assert_called_once()
+            edit_kwargs = mock_msg.edit.call_args[1]
+            self.assertIn("Timed Out", edit_kwargs["embed"].title)
+
+            # Channel should receive 2nd puzzle
+            mock_channel.send.assert_called_once()
+            second_view = cog.active_spawn_games[channel_id]
+            self.assertNotEqual(first_view, second_view)
+            self.assertFalse(second_view.game.game_over)
+
+
 if __name__ == "__main__":
     unittest.main()
+

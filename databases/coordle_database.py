@@ -49,6 +49,17 @@ class CoordleDatabase:
                 )
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS coordle_spawn_channels (
+                    guild_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    role_id INTEGER,
+                    word_length INTEGER DEFAULT 5,
+                    max_attempts INTEGER DEFAULT 6,
+                    mode TEXT DEFAULT 'normal'
+                )
+            """)
+
             # Ensure all defined columns exist on pre-existing DB files
             cursor = await db.execute("PRAGMA table_info(coordle_stats)")
             existing_cols = {row[1] for row in await cursor.fetchall()}
@@ -60,6 +71,18 @@ class CoordleDatabase:
             for col_name, col_type in migrations:
                 if col_name not in existing_cols:
                     await db.execute(f"ALTER TABLE coordle_stats ADD COLUMN {col_name} {col_type}")
+
+            cursor = await db.execute("PRAGMA table_info(coordle_spawn_channels)")
+            existing_spawn_cols = {row[1] for row in await cursor.fetchall()}
+            spawn_migrations = [
+                ("role_id", "INTEGER"),
+                ("word_length", "INTEGER DEFAULT 5"),
+                ("max_attempts", "INTEGER DEFAULT 6"),
+                ("mode", "TEXT DEFAULT 'normal'"),
+            ]
+            for col_name, col_type in spawn_migrations:
+                if col_name not in existing_spawn_cols:
+                    await db.execute(f"ALTER TABLE coordle_spawn_channels ADD COLUMN {col_name} {col_type}")
 
             await db.commit()
 
@@ -111,6 +134,52 @@ class CoordleDatabase:
             async with db.execute("SELECT guild_id, daily_channel_id FROM coordle_guild_channels") as cursor:
                 rows = await cursor.fetchall()
                 return [(r[0], r[1]) for r in rows]
+
+    async def set_spawn_channel(
+        self,
+        guild_id: int,
+        channel_id: int,
+        role_id: Optional[int] = None,
+        word_length: int = 5,
+        max_attempts: int = 6,
+        mode: str = "normal"
+    ):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO coordle_spawn_channels (guild_id, channel_id, role_id, word_length, max_attempts, mode)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    role_id = excluded.role_id,
+                    word_length = excluded.word_length,
+                    max_attempts = excluded.max_attempts,
+                    mode = excluded.mode
+            """, (guild_id, channel_id, role_id, word_length, max_attempts, mode))
+            await db.commit()
+
+    async def remove_spawn_channel(self, guild_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM coordle_spawn_channels WHERE guild_id = ?", (guild_id,))
+            await db.commit()
+
+    async def get_spawn_channel(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT guild_id, channel_id, role_id, word_length, max_attempts, mode FROM coordle_spawn_channels WHERE guild_id = ?",
+                (guild_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_all_spawn_channels(self) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT guild_id, channel_id, role_id, word_length, max_attempts, mode FROM coordle_spawn_channels"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
     async def update_daily_streak(self, user_id: int, guild_id: int, today_str: str):
         """Updates win streak for the daily puzzle."""

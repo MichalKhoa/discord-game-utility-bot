@@ -32,8 +32,9 @@ Covers all Discord cogs in `cogs/` directory.
    - Interactive views and guess modal encapsulated in `utils/coordle_views.py` (`CoordleGameView`, `CoordleGuessModal`, `CoordleLeaderboardView`).
    - Dynamic Pillow (`utils/coordle_image.py`) board & QWERTY keyboard image renderer.
    - Deterministic server-wide daily puzzles (/coordle_daily) and automated 00:00 UTC channel broadcasting.
+   - Periodic 30-minute puzzle spawning at :00 and :30 with configurable role mentions, word length (or random), attempts, and timeout expiration for overlapping games.
    - Word lists live in `assets/wordle/` (`answers_*.json`, `guesses_*.json`); answers are curated common words validated via `scripts/check_word_lists.py`.
-   - Commands: `/coordle`, `/coordle_daily`, `/coordle_daily_channel`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`, `/coordle_session`.
+   - Commands: `/coordle`, `/coordle_daily`, `/coordle_daily_channel`, `/coordle_spawn_channel`, `/coordle_leaderboard`, `/coordle_stats`, `/coordle_rules`, `/coordle_session`.
 10. `cogs/menu.py`:
    - Interactive help navigation and menu panels.
 

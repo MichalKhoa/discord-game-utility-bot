@@ -39,6 +39,7 @@ __all__ = [
     "DATA_DIR",
     "DEFINITION_CACHE",
     "ROOT_DIR",
+    "SPAWN_TIMES",
     "WORD_CACHE",
     "Coordle",
     "CoordleGame",
@@ -58,12 +59,19 @@ __all__ = [
     "setup",
 ]
 
+SPAWN_TIMES = [
+    datetime.time(hour=h, minute=m, tzinfo=datetime.timezone.utc)
+    for h in range(24)
+    for m in (0, 30)
+]
+
 
 class Coordle(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = getattr(bot, "coordle_db", None) or CoordleDatabase()
         self.active_sessions: Dict[int, CoordleSession] = {}
+        self.active_spawn_games: Dict[int, CoordleGameView] = {}
 
     def get_active_session(self, channel_id: int) -> Optional[CoordleSession]:
         session = self.active_sessions.get(channel_id)
@@ -79,9 +87,11 @@ class Coordle(commands.Cog):
     async def cog_load(self):
         await self.db.init_db()
         self.daily_puzzle_broadcast.start()
+        self.periodic_spawn_broadcast.start()
 
     async def cog_unload(self):
         self.daily_puzzle_broadcast.cancel()
+        self.periodic_spawn_broadcast.cancel()
 
     @tasks.loop(time=datetime.time(hour=0, minute=0, tzinfo=datetime.timezone.utc))
     async def daily_puzzle_broadcast(self):
@@ -118,6 +128,103 @@ class Coordle(commands.Cog):
 
     @daily_puzzle_broadcast.before_loop
     async def before_daily_puzzle(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=SPAWN_TIMES)
+    async def periodic_spawn_broadcast(self):
+        """Automatically posts periodic Co-ordle puzzles every 30 minutes (:00 and :30 UTC)."""
+        channels = await self.db.get_all_spawn_channels()
+        for cfg in channels:
+            guild_id = cfg["guild_id"]
+            channel_id = cfg["channel_id"]
+            role_id = cfg.get("role_id")
+            word_length = cfg.get("word_length") or 5
+            max_attempts = cfg.get("max_attempts") or 6
+            mode = cfg.get("mode") or "normal"
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    continue
+            if not channel or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                continue
+
+            try:
+                # Expire and conclude previous active game in this channel
+                prev_view = self.active_spawn_games.get(channel_id)
+                if prev_view and not prev_view.game.game_over:
+                    if prev_view.blitz_task:
+                        prev_view.blitz_task.cancel()
+                    prev_view.game.game_over = True
+                    prev_view.game.expired = True
+                    prev_view.stop()
+                    await prev_view.game.ensure_definition(db=self.db)
+                    await prev_view.save_stats()
+                    prev_view.update_buttons()
+                    prev_embed, prev_file = prev_view.get_embed_and_file()
+                    prev_embed.title = f"⌛ Co-ordle ({prev_view.game.word_length} Letters) — Timed Out"
+                    prev_embed.colour = discord.Colour.dark_grey()
+                    prev_embed.description += (
+                        f"\n\n⌛ **Spawn Timed Out**: Concluded to make way for the new puzzle spawn. "
+                        f"The mystery word was **`{prev_view.game.target_word}`**."
+                    )
+                    if prev_view.message:
+                        try:
+                            await prev_view.message.edit(
+                                embed=prev_embed,
+                                view=prev_view,
+                                attachments=[prev_file] if prev_file else []
+                            )
+                        except Exception:
+                            pass
+
+                # Select word length (4-8, or random if 0 or outside range)
+                if not (4 <= word_length <= 8):
+                    actual_length = random.randint(4, 8)
+                else:
+                    actual_length = word_length
+
+                answers, _ = load_words(actual_length)
+                if not answers:
+                    answers, _ = load_words(5)
+                    actual_length = 5
+
+                target_word = random.choice(answers)
+                actual_attempts = max(3, min(15, max_attempts))
+
+                game = CoordleGame(
+                    target_word=target_word,
+                    max_attempts=actual_attempts,
+                    guild_id=guild_id,
+                    channel_id=channel_id,
+                    mode=mode
+                )
+                view = CoordleGameView(game, cog=self)
+                embed, file = view.get_embed_and_file()
+
+                role_mention = f"<@&{role_id}> " if role_id else ""
+                content = (
+                    f"{role_mention}🎯 **A new {actual_length}-letter Co-ordle has spawned!**\n"
+                    f"Join forces to crack the code before the next spawn!"
+                )
+
+                msg = await channel.send(
+                    content=content,
+                    embed=embed,
+                    view=view,
+                    file=file if file else discord.utils.MISSING
+                )
+                view.message = msg
+                if mode == "blitz":
+                    view.start_blitz_watcher()
+                self.active_spawn_games[channel_id] = view
+            except Exception as e:
+                print(f"Failed to broadcast periodic Co-ordle to channel {channel_id}: {e}")
+
+    @periodic_spawn_broadcast.before_loop
+    async def before_periodic_spawn(self):
         await self.bot.wait_until_ready()
 
     async def start_game(
@@ -309,6 +416,126 @@ class Coordle(commands.Cog):
         else:
             await self.db.remove_daily_channel(guild_id)
             await interaction.response.send_message("✅ Removed automated Daily Co-ordle channel for this server.")
+
+    @app_commands.command(name="coordle_spawn_channel", description="Set or remove the channel for periodic Co-ordle game spawns every 30 minutes (Admin).")
+    @app_commands.describe(
+        action="Configure, remove, or view the periodic spawn channel",
+        channel="The text channel for periodic spawns (only for 'set', defaults to current)",
+        role="Role to mention when a new puzzle spawns (optional)",
+        length="Word length: 4-8 letters, or 0 for Random (default: 5)",
+        attempts="Attempts allowed: 3-15 (default: 6)",
+        mode="Game mode: Normal (relaxed) or Blitz (5m timer)"
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="📌 Set Spawn Channel", value="set"),
+        app_commands.Choice(name="❌ Remove Spawn Channel", value="remove"),
+        app_commands.Choice(name="ℹ️ View Status", value="status")
+    ])
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="⏱️ Normal Mode", value="normal"),
+        app_commands.Choice(name="⚡ Blitz Mode", value="blitz")
+    ])
+    @app_commands.default_permissions(manage_guild=True)
+    async def coordle_spawn_channel_cmd(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        channel: Optional[discord.TextChannel] = None,
+        role: Optional[discord.Role] = None,
+        length: Optional[int] = 5,
+        attempts: Optional[int] = 6,
+        mode: Optional[str] = "normal"
+    ):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+            return
+
+        guild_id = interaction.guild.id
+
+        if action == "set":
+            target_channel = channel or interaction.channel
+            if not isinstance(target_channel, discord.TextChannel):
+                await interaction.response.send_message("❌ Please specify a valid text channel.", ephemeral=True)
+                return
+
+            actual_length = 5 if length is None else length
+            if actual_length != 0 and not (4 <= actual_length <= 8):
+                await interaction.response.send_message("❌ Word length must be between 4 and 8 (or 0 for Random).", ephemeral=True)
+                return
+
+            actual_attempts = 6 if attempts is None else attempts
+            if not (3 <= actual_attempts <= 15):
+                await interaction.response.send_message("❌ Max attempts must be between 3 and 15.", ephemeral=True)
+                return
+
+            actual_mode = mode if mode in ("normal", "blitz") else "normal"
+            role_id = role.id if role else None
+
+            await self.db.set_spawn_channel(
+                guild_id=guild_id,
+                channel_id=target_channel.id,
+                role_id=role_id,
+                word_length=actual_length,
+                max_attempts=actual_attempts,
+                mode=actual_mode
+            )
+
+            role_str = role.mention if role else "*None (no ping)*"
+            len_str = "Random (4-8 letters)" if actual_length == 0 else f"{actual_length} letters"
+            mode_str = "⚡ Blitz" if actual_mode == "blitz" else "⏱️ Normal"
+
+            embed = discord.Embed(
+                title="✅ Periodic Co-ordle Spawns Configured",
+                description=(
+                    f"Puzzles will spawn every **30 minutes** (at `:00` and `:30` UTC).\n\n"
+                    f"• **Channel**: {target_channel.mention}\n"
+                    f"• **Role Tag**: {role_str}\n"
+                    f"• **Word Length**: `{len_str}`\n"
+                    f"• **Attempts**: `{actual_attempts}`\n"
+                    f"• **Mode**: `{mode_str}`\n"
+                    f"• **Overlaps**: Active games expire automatically when new puzzles arrive."
+                ),
+                colour=discord.Colour.green()
+            )
+            await interaction.response.send_message(embed=embed)
+
+        elif action == "remove":
+            await self.db.remove_spawn_channel(guild_id)
+            await interaction.response.send_message("✅ Removed periodic Co-ordle spawn schedule for this server.")
+
+        elif action == "status":
+            cfg = await self.db.get_spawn_channel(guild_id)
+            if not cfg:
+                await interaction.response.send_message(
+                    "ℹ️ Periodic Co-ordle spawns are currently **not configured** for this server.\n"
+                    "Use `/coordle_spawn_channel action:📌 Set Spawn Channel` to configure.",
+                    ephemeral=True
+                )
+                return
+
+            ch = self.bot.get_channel(cfg["channel_id"])
+            ch_str = ch.mention if ch else f"<#{cfg['channel_id']}>"
+            role_id = cfg.get("role_id")
+            role_str = f"<@&{role_id}>" if role_id else "*None (no ping)*"
+            word_len = cfg.get("word_length", 5)
+            len_str = "Random (4-8 letters)" if word_len == 0 else f"{word_len} letters"
+            attempts_val = cfg.get("max_attempts", 6)
+            mode_val = cfg.get("mode", "normal")
+            mode_str = "⚡ Blitz" if mode_val == "blitz" else "⏱️ Normal"
+
+            embed = discord.Embed(
+                title="⚙️ Periodic Co-ordle Spawn Settings",
+                description=(
+                    f"• **Channel**: {ch_str}\n"
+                    f"• **Role Tag**: {role_str}\n"
+                    f"• **Schedule**: Every 30 minutes (`:00` & `:30` UTC)\n"
+                    f"• **Word Length**: `{len_str}`\n"
+                    f"• **Attempts**: `{attempts_val}`\n"
+                    f"• **Mode**: `{mode_str}`"
+                ),
+                colour=discord.Colour.blue()
+            )
+            await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="coordle_leaderboard", description="View the server's Co-ordle leaderboard and top solvers.")
     async def coordle_leaderboard_cmd(self, interaction: discord.Interaction):
